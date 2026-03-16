@@ -67,6 +67,7 @@ contains
     real(kind=kind_noahmp)            :: f_soil_mid                   ! f_soil at midpoint WTD
     real(kind=kind_noahmp)            :: net_total_flux_mm            ! total net flux [mm]
     real(kind=kind_noahmp)            :: flux_correction_mm           ! corrector flux redistribution [mm]
+    real(kind=kind_noahmp)            :: actual_correction_mm         ! actual soil change after clamp [mm]
     real(kind=kind_noahmp)            :: SoilDepthTotal               ! total soil column depth [m]
     real(kind=kind_noahmp)            :: delta_theta                  ! per-layer correction [m3/m3]
     real(kind=kind_noahmp), parameter :: WaterTableDepthMinPeat = -1.0
@@ -382,22 +383,29 @@ contains
         endif
         
         ! Apply correction: move water between surface and soil
+        ! Track ACTUAL soil change to preserve water balance (clamp may limit absorption)
         if (abs(flux_correction_mm) > 1.0e-12_kind_noahmp) then
-            ! Adjust surface water accounting
-            FSW_change = FSW_change - flux_correction_mm
-            
             ! Distribute correction uniformly across soil layers
-            ! (total deficit change is what matters for WTD diagnosis)
             SoilDepthTotal = 0.0_kind_noahmp
             do LoopInd2 = 1, NumSoilLayer
                 SoilDepthTotal = SoilDepthTotal + ThicknessSnowSoilLayer(LoopInd2)
             enddo
             delta_theta = flux_correction_mm / (SoilDepthTotal * 1000.0_kind_noahmp)
+
+            ! Compute actual soil moisture change (respecting saturation/zero clamp)
+            actual_correction_mm = 0.0_kind_noahmp
             do LoopInd2 = 1, NumSoilLayer
+                SoilLiqTmp(LoopInd2) = SoilLiqWater(LoopInd2)
                 SoilLiqWater(LoopInd2) = SoilLiqWater(LoopInd2) + delta_theta
                 SoilLiqWater(LoopInd2) = max(0.0_kind_noahmp, &
                     min(SoilMoistureSat(LoopInd2) - SoilIce(LoopInd2), SoilLiqWater(LoopInd2)))
+                actual_correction_mm = actual_correction_mm + &
+                    (SoilLiqWater(LoopInd2) - SoilLiqTmp(LoopInd2)) * ThicknessSnowSoilLayer(LoopInd2) * 1000.0_kind_noahmp
             enddo
+
+            ! Adjust FSW_change by the ACTUAL amount absorbed/released by soil
+            ! This ensures water balance closure even when clamp limits the correction
+            FSW_change = FSW_change - actual_correction_mm
             
             ! Re-diagnose WTD with corrected soil moisture
             call WaterTableEquilibriumPeat(noahmp)
