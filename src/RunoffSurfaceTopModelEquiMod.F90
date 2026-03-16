@@ -41,7 +41,7 @@ contains
     ! compute saturated area fraction
     SoilSaturateFrac = SoilSfcSatFracMax * exp(-0.5 * RunoffDecayFac * WaterTableDepth)
     
-    write(*,*) 'DEBUG: SoilSaturateFrac = ', SoilSaturateFrac
+    !write(*,*) 'DEBUG: SoilSaturateFrac = ', SoilSaturateFrac
 
     ! compute surface runoff and infiltration  m/s
     if ( SoilSfcInflowMean > 0.0 ) then

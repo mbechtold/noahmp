@@ -53,7 +53,7 @@ contains
 
     ! Compute transmissivity function (Ta) [m^2/s]
     ! Clamp to -1.0 m (maximum allowed water above surface with microtopography)
-    Ta = (Ksz_zero * (24.5_dp + 100.0_dp * max(-1.0_dp, WaterTableDepth))**(1.0_dp - m_Ivanov)) / &
+    Ta = (Ksz_zero * (24.5_dp + 100.0_dp * max(-0.2449_dp, WaterTableDepth))**(1.0_dp - m_Ivanov)) / &
          (100.0_dp * (m_Ivanov - 1.0_dp))
 
     ! Compute baseflow (BFLOW) in mm/s
