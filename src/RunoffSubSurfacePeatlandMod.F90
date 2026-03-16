@@ -1,6 +1,7 @@
 module RunoffSubSurfacePeatlandMod
 
-!!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme - Enabled by (Chakraborty & Bechtold, 2025)
+!!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme
+!!! Introduced by Chakraborty & Bechtold (2025), WTD equilibrium revised by Bechtold (2026)
 
   use Machine
   use NoahmpVarType
@@ -14,7 +15,7 @@ contains
   subroutine RunoffSubSurfacePeatland(noahmp)
 
 ! ------------------------ Code history --------------------------------------------------
-! Modified to include Peatland-specific Ivanov-based runoff scheme (Chakraborty & Bechtold, 2025)
+! Peatland-specific Ivanov-based runoff scheme (Chakraborty & Bechtold, 2025; revised Bechtold, 2026)
 ! ----------------------------------------------------------------------------------------
 
     implicit none
@@ -38,10 +39,8 @@ contains
 ! ----------------------------------------------------------------------
 
     ! Compute equilibrium water table depth
-    ! For very shallow water table detph, use PEATCLSM approximation outside of this routine
-    if (WaterTableDepth>0.1) then
-       call WaterTableEquilibriumPeat(noahmp)
-    endif
+    ! With microtopography, WaterTableEquilibriumPeat handles all WTD ranges
+    call WaterTableEquilibriumPeat(noahmp)
 
     ! ------------------------------------------
     ! Option 9: Ivanov-based Peatland Runoff Scheme (Chakraborty & Bechtold, 2025)
@@ -53,7 +52,8 @@ contains
     v_slope = 1.5e-08_dp       ! Slope factor for runoff generation [unitless]
 
     ! Compute transmissivity function (Ta) [m^2/s]
-    Ta = (Ksz_zero * (24.5_dp + 100.0_dp * max(-0.2449_dp, WaterTableDepth))**(1.0_dp - m_Ivanov)) / &
+    ! Clamp to -1.0 m (maximum allowed water above surface with microtopography)
+    Ta = (Ksz_zero * (24.5_dp + 100.0_dp * max(-1.0_dp, WaterTableDepth))**(1.0_dp - m_Ivanov)) / &
          (100.0_dp * (m_Ivanov - 1.0_dp))
 
     ! Compute baseflow (BFLOW) in mm/s

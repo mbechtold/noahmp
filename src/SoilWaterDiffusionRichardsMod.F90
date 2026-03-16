@@ -64,8 +64,7 @@ contains
               SoilWatConductivity       => noahmp%water%state%SoilWatConductivity         ,& ! out, soil hydraulic conductivity [m/s]
               SoilWatDiffusivity        => noahmp%water%state%SoilWatDiffusivity          ,& ! out, soil water diffusivity [m2/s]
               FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout,   surface storage change [mm]
-              f_soil                    => noahmp%water%state%f_soil                      ,& ! inout, fraction of flux in and out of soil [-]
-              AR1                       => noahmp%water%state%AR1                         ,& ! inout, fraction of flux in and out of soil [-]
+              f_soil                    => noahmp%water%state%f_soil                      ,& ! in, fraction of flux to soil [-] (Sy_soil/Sy_total)
               DrainSoilBot              => noahmp%water%flux%DrainSoilBot                  & ! out, soil bottom drainage [m/s]
              )
 ! ----------------------------------------------------------------------
