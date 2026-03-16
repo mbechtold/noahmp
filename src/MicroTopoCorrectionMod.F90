@@ -1,11 +1,22 @@
 module MicroTopoCorrectionMod
 
-!!! Enabled by (Chakraborty & Bechtold, 2025)
+!!! Microtopography correction for peatlands based on Dettmann & Bechtold (2015)
+!!! Replaces empirical PEATCLSM equations with physically-based Gaussian
+!!! microtopography distribution.
+!!!
+!!! Computes:
+!!!   - FloodedFraction: fraction of surface below water table (from Gaussian CDF)
+!!!   - f_soil: fraction of fluxes going to soil (from Sy decomposition)
+!!!   - SySoilLocal / SySurfLocal: local specific yield components
+!!!
+!!! Introduced by Chakraborty & Bechtold (2025), revised with Dettmann & Bechtold (2015)
+!!! microtopography theory by Bechtold (2026)
 
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use WaterTableEquilibriumPeatMod,      only : WaterTableEquilibriumPeat
+  use PeatMicroTopoMod, only : FloodedFrac, FsoilMicroTopo, &
+                                InitGaussLegendre, gl_initialized
 
   implicit none
 
@@ -14,49 +25,47 @@ contains
   subroutine MicroTopoCorrection(noahmp)
 
 ! ------------------------ Code history --------------------------------------------------
-! SY from WaterTableDepth following PEATCLSM routines (Chakraborty & Bechtold, 2025)
+! Original: Specific yield from WaterTableDepth (Chakraborty & Bechtold, 2025)
+! Revised:  Dettmann & Bechtold (2015) Gaussian microtopography physics (Bechtold, 2026)
 ! ----------------------------------------------------------------------------------------
 
     implicit none
 
     type(noahmp_type), intent(inout) :: noahmp
 
-    ! Define double precision kind parameter
-    integer, parameter :: dp = kind(1.0d0)
-
-    ! Declare local peatland-specific parameters
-    real(dp) :: SySoil, bf1, bf2, PEATCLSM_ZBARMAX_4_SYSOIL
-    real(dp) :: catdef, ars1, ars2, ars3
+    ! Local variables
+    real(kind=kind_noahmp) :: z_wt             ! water table in D&B convention (positive up)
+    real(kind=kind_noahmp) :: ae, bb, thetas   ! Campbell soil parameters
 
 ! --------------------------------------------------------------------
     associate(                                                           &
-              InfilRateSfc           => noahmp%water%flux%InfilRateSfc    ,& ! in,   infiltration rate at surface [m/s]
-              SoilTimeStep           => noahmp%config%domain%SoilTimeStep ,& ! in,    noahmp soil time step [s]
-              f_soil                 => noahmp%water%state%f_soil         ,& ! inout, fraction of flux in and out of soil [-]
-              AR1                    => noahmp%water%state%AR1         ,& ! inout, fraction of flux in and out of soil [-]
-              WaterTableDepth   => noahmp%water%state%WaterTableDepth      & ! inout,   water table depth [m]
+              SoilMoistureSat     => noahmp%water%param%SoilMoistureSat    ,& ! in, saturated water content [m3/m3]
+              SoilMatPotentialSat => noahmp%water%param%SoilMatPotentialSat,& ! in, air-entry potential [m]
+              SoilExpCoeffB       => noahmp%water%param%SoilExpCoeffB      ,& ! in, Campbell b exponent
+              f_soil              => noahmp%water%state%f_soil             ,& ! out, fraction of flux to soil [-]
+              FloodedFraction     => noahmp%water%state%FloodedFraction    ,& ! out, fraction of surface flooded [-]
+              WaterTableDepth     => noahmp%water%state%WaterTableDepth     & ! in, water table depth [m] positive downward
              )
 ! ----------------------------------------------------------------------
 
-    ! Assign parameter values for peatland
-    ! CO NN
-    bf1 = 1.8064707e+02
-    bf2 = 2.4298242e-01
-    ars1 = -8.9250673e-03
-    ars2 = 5.7296452e-02
-    ars3 = 2.2656331e-03
-    PEATCLSM_ZBARMAX_4_SYSOIL = 0.45    ! [m]
+    ! Ensure Gauss-Legendre quadrature is initialized
+    if (.not. gl_initialized) call InitGaussLegendre()
 
-    ! Compute transmissivity function (Ta) [m^2/s]
-    SySoil = (2.*bf1*min(max(WaterTableDepth,0.),PEATCLSM_ZBARMAX_4_SYSOIL) + 2.*bf1*bf2)/1000.
-    catdef = max(((WaterTableDepth + bf2)**2 - 1.0E-20), 0._dp) * bf1
-    AR1 = (1.+ars1*(catdef))/(1.+ars2*(catdef)+ars3*(catdef)**2)
-    
-    if (WaterTableDepth>0.1) then
-        f_soil = MAX(MIN(1.0,(1.-AR1)*SySoil/(AR1+(1.-AR1)*SySoil)),0.0)
-    else
-        f_soil = 0.0
-    endif
+    ! Campbell soil parameters (use top layer, uniform for peat)
+    thetas = SoilMoistureSat(1)
+    ae     = abs(SoilMatPotentialSat(1))   ! positive air-entry head [m]
+    bb     = SoilExpCoeffB(1)
+
+    ! Convert to D&B convention: z positive upward from mean surface
+    z_wt = -WaterTableDepth
+
+    ! Compute flooded fraction from Gaussian CDF of surface elevations
+    FloodedFraction = FloodedFrac(z_wt)
+
+    ! Compute f_soil from Sy decomposition (Dettmann & Bechtold 2015, Eq. 2)
+    ! f_soil = Sy_soil / (Sy_soil + Sy_surface)
+    ! This replaces the old f_soil empirical equation from PEATCLSM
+    f_soil = FsoilMicroTopo(z_wt, thetas, ae, bb)
 
     end associate
 
