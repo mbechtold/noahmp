@@ -42,9 +42,16 @@ module PeatMicroTopoMod
   real(kind=kind_noahmp), parameter :: z_trunc     = 1.0_kind_noahmp    ! truncation limit [m]
   real(kind=kind_noahmp), parameter :: pi_noahmp   = 3.14159265358979323846_kind_noahmp
 
-  ! ------ Gauss-Legendre quadrature (20 points on [-1,1]) ------
+  ! ------ Gauss-Legendre quadrature ------
+  ! Standard 20-point rule for functions with smooth integrands
+  ! (surface water, specific yield, soil thickness, etc.)
   integer, parameter :: n_gl = 20
   real(kind=kind_noahmp), dimension(n_gl) :: gl_nodes, gl_weights
+
+  ! Fine 100-point rule for the microtopo zone in SoilWaterStorageMicroTopo
+  ! where the Campbell air-entry kink demands high resolution
+  integer, parameter :: n_gl_fine = 100
+  real(kind=kind_noahmp), dimension(n_gl_fine) :: gl_nodes_fine, gl_weights_fine
 
   ! Flag for initialization
   logical, save :: gl_initialized = .false.
@@ -52,7 +59,9 @@ module PeatMicroTopoMod
 contains
 
   !========================================================================
-  ! Initialize Gauss-Legendre nodes and weights for 20-point quadrature
+  ! Initialize Gauss-Legendre nodes and weights
+  ! - 20-point table: hardcoded for general use
+  ! - 100-point table: computed via Newton iteration on Legendre polynomials
   !========================================================================
   subroutine InitGaussLegendre()
     implicit none
@@ -101,9 +110,61 @@ contains
     gl_weights(19) = 0.0406014298003869_kind_noahmp
     gl_weights(20) = 0.0176140071391521_kind_noahmp
 
+    ! Compute 100-point Gauss-Legendre via Newton iteration
+    call ComputeGaussLegendre(n_gl_fine, gl_nodes_fine, gl_weights_fine)
+
     gl_initialized = .true.
 
   end subroutine InitGaussLegendre
+
+  !========================================================================
+  ! Compute n-point Gauss-Legendre nodes and weights on [-1,1]
+  ! using Newton iteration on the Legendre polynomial P_n(x).
+  ! Exploits symmetry: only computes half the roots.
+  !========================================================================
+  subroutine ComputeGaussLegendre(n, nodes, weights)
+    implicit none
+    integer, intent(in) :: n
+    real(kind=kind_noahmp), intent(out) :: nodes(n), weights(n)
+    integer :: i, j, m, iter
+    real(kind=kind_noahmp) :: x, x_old, p0, p1, p2, dp
+    integer, parameter :: max_iter = 100
+    real(kind=kind_noahmp), parameter :: tol = 1.0e-15_kind_noahmp
+
+    m = (n + 1) / 2  ! number of roots to compute (positive half + centre)
+
+    do i = 1, m
+       ! Initial guess (Tricomi approximation)
+       x = cos(pi_noahmp * (real(i, kind_noahmp) - 0.25_kind_noahmp) / &
+                            (real(n, kind_noahmp) + 0.5_kind_noahmp))
+
+       ! Newton iteration to find root of P_n(x)
+       do iter = 1, max_iter
+          ! Evaluate P_n(x) and P_n'(x) via recurrence
+          p0 = 1.0_kind_noahmp          ! P_0(x)
+          p1 = x                         ! P_1(x)
+          do j = 2, n
+             p2 = ((2.0_kind_noahmp * real(j, kind_noahmp) - 1.0_kind_noahmp) * x * p1 &
+                  - (real(j, kind_noahmp) - 1.0_kind_noahmp) * p0) / real(j, kind_noahmp)
+             p0 = p1
+             p1 = p2
+          enddo
+          ! p1 = P_n(x)
+          ! Derivative: P_n'(x) = n*(x*P_n - P_{n-1}) / (x^2 - 1)
+          dp = real(n, kind_noahmp) * (x * p1 - p0) / (x * x - 1.0_kind_noahmp)
+          x_old = x
+          x = x - p1 / dp
+          if (abs(x - x_old) < tol) exit
+       enddo
+
+       ! Assign symmetric pairs
+       nodes(i)     = -x
+       nodes(n+1-i) =  x
+       weights(i)       = 2.0_kind_noahmp / ((1.0_kind_noahmp - x*x) * dp*dp)
+       weights(n+1-i)   = weights(i)
+    enddo
+
+  end subroutine ComputeGaussLegendre
 
   !========================================================================
   ! Approximate error function using Abramowitz & Stegun (1964) 7.1.26
@@ -257,35 +318,64 @@ contains
   !             -z_col_bot up to +z_trunc (top of hummocks).
   !             Deep below the surface, Fs_cdf ≈ 0 so soil_frac ≈ 1
   !             naturally from the Gaussian CDF tail.
+  !
+  ! Composite Gauss-Legendre quadrature: the domain is split at
+  ! z = -z_trunc into two sub-intervals to maintain resolution.
+  ! The Campbell air-entry transition (width h_e ≈ 0.024 m) would
+  ! create derivative discontinuities at each quadrature node when a
+  ! single GL rule spans the full 3 m domain.  Splitting concentrates
+  ! 20 nodes on the 2 m microtopo zone and 20 on the 1 m deep zone,
+  ! yielding much smoother integrals as z_wt varies.
   !========================================================================
   function SoilWaterStorageMicroTopo(z_wt, theta_s, h_e, b_camp, z_col_bot) result(A_soil)
     implicit none
     real(kind=kind_noahmp), intent(in) :: z_wt, theta_s, h_e, b_camp, z_col_bot
     real(kind=kind_noahmp) :: A_soil
     real(kind=kind_noahmp) :: z_lo, z_hi, z_mid, z_half, z_pt, h_pt
-    real(kind=kind_noahmp) :: soil_frac, theta_val
+    real(kind=kind_noahmp) :: soil_frac, theta_val, A_sub
     integer :: k
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
-    ! Integration from -z_col_bot to +z_trunc
-    ! Above +z_trunc: F_s=1, soil_frac=0, no contribution.
-    ! Deep below the surface: F_s ≈ 0, soil_frac ≈ 1 (standard Campbell).
-    z_lo = -z_col_bot
-    z_hi =  z_trunc
+    A_soil = 0.0_kind_noahmp
 
+    ! --- Sub-interval 1: deep zone [-z_col_bot, -z_trunc] ---
+    ! soil_frac ≈ 1 here (Fs negligible at depth).
+    ! Included for generality; typically fully saturated for peatland WTDs.
+    if (z_col_bot > z_trunc) then
+      z_lo = -z_col_bot
+      z_hi = -z_trunc
+      z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
+      z_half = 0.5_kind_noahmp * (z_hi - z_lo)
+
+      A_sub = 0.0_kind_noahmp
+      do k = 1, n_gl
+         z_pt = z_mid + z_half * gl_nodes(k)
+         soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
+         h_pt = z_wt - z_pt
+         theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
+         A_sub = A_sub + gl_weights(k) * soil_frac * theta_val
+      enddo
+      A_soil = A_soil + A_sub * z_half
+    endif
+
+    ! --- Sub-interval 2: microtopo zone [-z_trunc, +z_trunc] ---
+    ! Full Gaussian CDF variation of soil_frac occurs here.
+    ! Uses 100-point GL rule for smooth deficit-vs-WTD relationship.
+    z_lo = -z_trunc
+    z_hi =  z_trunc
     z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
     z_half = 0.5_kind_noahmp * (z_hi - z_lo)
 
-    A_soil = 0.0_kind_noahmp
-    do k = 1, n_gl
-       z_pt = z_mid + z_half * gl_nodes(k)
+    A_sub = 0.0_kind_noahmp
+    do k = 1, n_gl_fine
+       z_pt = z_mid + z_half * gl_nodes_fine(k)
        soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
-       h_pt = z_wt - z_pt   ! pressure head at elevation z_pt
+       h_pt = z_wt - z_pt
        theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
-       A_soil = A_soil + gl_weights(k) * soil_frac * theta_val
+       A_sub = A_sub + gl_weights_fine(k) * soil_frac * theta_val
     enddo
-    A_soil = A_soil * z_half
+    A_soil = A_soil + A_sub * z_half
 
   end function SoilWaterStorageMicroTopo
 
