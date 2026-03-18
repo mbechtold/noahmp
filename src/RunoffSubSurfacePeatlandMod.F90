@@ -3,11 +3,10 @@ module RunoffSubSurfacePeatlandMod
 !!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme
 !!! Introduced by Chakraborty & Bechtold (2025), WTD equilibrium revised by Bechtold (2026)
 !!!
-!!! Note: WaterTableDepth is NOT re-diagnosed here. It is assumed to be
-!!! already set by the previous timestep's end (via FindWaterTableFlat in
-!!! SoilWaterMainMod) or by initialization. This avoids inconsistency when
-!!! SoilLiqWater represents microtopo-integrated values rather than a flat
-!!! 1D profile.
+!!! Note: WaterTableDepth is diagnosed by FindWaterTable (microtopo-aware
+!!! bisection on SoilWaterStorageMicroTopoLite) in SoilWaterMainMod before
+!!! this subroutine is called.  The diagnosed WTD accounts for the
+!!! Gaussian microtopography distribution of Dettmann & Bechtold (2015).
 
   use Machine
   use NoahmpVarType
@@ -43,10 +42,8 @@ contains
              )
 ! ----------------------------------------------------------------------
 
-    ! WaterTableDepth is assumed valid from the previous timestep end or
-    ! from model initialization.  No re-diagnosis here — SoilLiqWater may
-    ! hold microtopo-integrated values that are incompatible with the flat
-    ! equilibrium deficit functions.
+    ! WaterTableDepth is diagnosed by FindWaterTable in SoilWaterMainMod
+    ! (microtopo-aware bisection) before this subroutine is called.
 
     ! ------------------------------------------
     ! Option 9: Ivanov-based Peatland Runoff Scheme (Chakraborty & Bechtold, 2025)

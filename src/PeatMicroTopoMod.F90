@@ -43,10 +43,15 @@ module PeatMicroTopoMod
   real(kind=kind_noahmp), parameter :: pi_noahmp   = 3.14159265358979323846_kind_noahmp
 
   ! ------ Gauss-Legendre quadrature ------
-  ! Standard 20-point rule for functions with smooth integrands
+  ! Standard 10-point rule for functions with smooth integrands
   ! (surface water, specific yield, soil thickness, etc.)
-  integer, parameter :: n_gl = 20
+  integer, parameter :: n_gl = 10
   real(kind=kind_noahmp), dimension(n_gl) :: gl_nodes, gl_weights
+
+  ! Lightweight 5-point rule for equilibrium SM integrals
+  ! (used in EquilibriumSMMicroTopo where the integrand is smooth)
+  integer, parameter :: n_gl_lite = 5
+  real(kind=kind_noahmp), dimension(n_gl_lite) :: gl_nodes_lite, gl_weights_lite
 
   ! Fine 100-point rule for the microtopo zone in SoilWaterStorageMicroTopo
   ! where the Campbell air-entry kink demands high resolution
@@ -60,55 +65,48 @@ contains
 
   !========================================================================
   ! Initialize Gauss-Legendre nodes and weights
-  ! - 20-point table: hardcoded for general use
+  ! - 10-point table: hardcoded for general use
+  ! - 5-point table: hardcoded for equilibrium SM integrals
   ! - 100-point table: computed via Newton iteration on Legendre polynomials
   !========================================================================
   subroutine InitGaussLegendre()
     implicit none
 
-    ! 20-point Gauss-Legendre nodes (on [-1,1]) and weights
-    ! Tabulated to high precision
-    gl_nodes( 1) = -0.9931285991850949_kind_noahmp
-    gl_nodes( 2) = -0.9639719272779138_kind_noahmp
-    gl_nodes( 3) = -0.9122344282513259_kind_noahmp
-    gl_nodes( 4) = -0.8391169718222188_kind_noahmp
-    gl_nodes( 5) = -0.7463319064601508_kind_noahmp
-    gl_nodes( 6) = -0.6360536807265150_kind_noahmp
-    gl_nodes( 7) = -0.5108670019508271_kind_noahmp
-    gl_nodes( 8) = -0.3737060887154195_kind_noahmp
-    gl_nodes( 9) = -0.2277858511416451_kind_noahmp
-    gl_nodes(10) = -0.0765265211334973_kind_noahmp
-    gl_nodes(11) =  0.0765265211334973_kind_noahmp
-    gl_nodes(12) =  0.2277858511416451_kind_noahmp
-    gl_nodes(13) =  0.3737060887154195_kind_noahmp
-    gl_nodes(14) =  0.5108670019508271_kind_noahmp
-    gl_nodes(15) =  0.6360536807265150_kind_noahmp
-    gl_nodes(16) =  0.7463319064601508_kind_noahmp
-    gl_nodes(17) =  0.8391169718222188_kind_noahmp
-    gl_nodes(18) =  0.9122344282513259_kind_noahmp
-    gl_nodes(19) =  0.9639719272779138_kind_noahmp
-    gl_nodes(20) =  0.9931285991850949_kind_noahmp
+    ! 10-point Gauss-Legendre nodes (on [-1,1]) and weights
+    gl_nodes( 1) = -0.9739065285171717_kind_noahmp
+    gl_nodes( 2) = -0.8650633666889845_kind_noahmp
+    gl_nodes( 3) = -0.6794095682990244_kind_noahmp
+    gl_nodes( 4) = -0.4333953941292472_kind_noahmp
+    gl_nodes( 5) = -0.1488743389816312_kind_noahmp
+    gl_nodes( 6) =  0.1488743389816312_kind_noahmp
+    gl_nodes( 7) =  0.4333953941292472_kind_noahmp
+    gl_nodes( 8) =  0.6794095682990244_kind_noahmp
+    gl_nodes( 9) =  0.8650633666889845_kind_noahmp
+    gl_nodes(10) =  0.9739065285171717_kind_noahmp
 
-    gl_weights( 1) = 0.0176140071391521_kind_noahmp
-    gl_weights( 2) = 0.0406014298003869_kind_noahmp
-    gl_weights( 3) = 0.0626720483341091_kind_noahmp
-    gl_weights( 4) = 0.0832767415767048_kind_noahmp
-    gl_weights( 5) = 0.1019301198172404_kind_noahmp
-    gl_weights( 6) = 0.1181945319615184_kind_noahmp
-    gl_weights( 7) = 0.1316886384491766_kind_noahmp
-    gl_weights( 8) = 0.1420961093183820_kind_noahmp
-    gl_weights( 9) = 0.1491729864726037_kind_noahmp
-    gl_weights(10) = 0.1527533871307258_kind_noahmp
-    gl_weights(11) = 0.1527533871307258_kind_noahmp
-    gl_weights(12) = 0.1491729864726037_kind_noahmp
-    gl_weights(13) = 0.1420961093183820_kind_noahmp
-    gl_weights(14) = 0.1316886384491766_kind_noahmp
-    gl_weights(15) = 0.1181945319615184_kind_noahmp
-    gl_weights(16) = 0.1019301198172404_kind_noahmp
-    gl_weights(17) = 0.0832767415767048_kind_noahmp
-    gl_weights(18) = 0.0626720483341091_kind_noahmp
-    gl_weights(19) = 0.0406014298003869_kind_noahmp
-    gl_weights(20) = 0.0176140071391521_kind_noahmp
+    gl_weights( 1) = 0.0666713443086881_kind_noahmp
+    gl_weights( 2) = 0.1494513491505806_kind_noahmp
+    gl_weights( 3) = 0.2190863625159820_kind_noahmp
+    gl_weights( 4) = 0.2692667193099963_kind_noahmp
+    gl_weights( 5) = 0.2955242247147529_kind_noahmp
+    gl_weights( 6) = 0.2955242247147529_kind_noahmp
+    gl_weights( 7) = 0.2692667193099963_kind_noahmp
+    gl_weights( 8) = 0.2190863625159820_kind_noahmp
+    gl_weights( 9) = 0.1494513491505806_kind_noahmp
+    gl_weights(10) = 0.0666713443086881_kind_noahmp
+
+    ! 5-point Gauss-Legendre for lightweight equilibrium integrals
+    gl_nodes_lite(1) = -0.9061798459386640_kind_noahmp
+    gl_nodes_lite(2) = -0.5384693101056831_kind_noahmp
+    gl_nodes_lite(3) =  0.0_kind_noahmp
+    gl_nodes_lite(4) =  0.5384693101056831_kind_noahmp
+    gl_nodes_lite(5) =  0.9061798459386640_kind_noahmp
+
+    gl_weights_lite(1) = 0.2369268850561891_kind_noahmp
+    gl_weights_lite(2) = 0.4786286704993665_kind_noahmp
+    gl_weights_lite(3) = 0.5688888888888889_kind_noahmp
+    gl_weights_lite(4) = 0.4786286704993665_kind_noahmp
+    gl_weights_lite(5) = 0.2369268850561891_kind_noahmp
 
     ! Compute 100-point Gauss-Legendre via Newton iteration
     call ComputeGaussLegendre(n_gl_fine, gl_nodes_fine, gl_weights_fine)
@@ -380,6 +378,63 @@ contains
   end function SoilWaterStorageMicroTopo
 
   !========================================================================
+  ! Lightweight soil water storage [m] for water table at z_wt.
+  ! Same physics as SoilWaterStorageMicroTopo but uses n_gl (10-pt)
+  ! instead of n_gl_fine (100-pt) for the microtopo zone.
+  !
+  ! Designed for fast repeated evaluation inside FindWaterTable bisection.
+  ! Accuracy is sufficient for WTD diagnosis (tolerance 1e-5 m).
+  !========================================================================
+  function SoilWaterStorageMicroTopoLite(z_wt, theta_s, h_e, b_camp, z_col_bot) result(A_soil)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: z_wt, theta_s, h_e, b_camp, z_col_bot
+    real(kind=kind_noahmp) :: A_soil
+    real(kind=kind_noahmp) :: z_lo, z_hi, z_mid, z_half, z_pt, h_pt
+    real(kind=kind_noahmp) :: soil_frac, theta_val, A_sub
+    integer :: k
+
+    if (.not. gl_initialized) call InitGaussLegendre()
+
+    A_soil = 0.0_kind_noahmp
+
+    ! --- Sub-interval 1: deep zone [-z_col_bot, -z_trunc] ---
+    if (z_col_bot > z_trunc) then
+      z_lo = -z_col_bot
+      z_hi = -z_trunc
+      z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
+      z_half = 0.5_kind_noahmp * (z_hi - z_lo)
+
+      A_sub = 0.0_kind_noahmp
+      do k = 1, n_gl
+         z_pt = z_mid + z_half * gl_nodes(k)
+         soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
+         h_pt = z_wt - z_pt
+         theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
+         A_sub = A_sub + gl_weights(k) * soil_frac * theta_val
+      enddo
+      A_soil = A_soil + A_sub * z_half
+    endif
+
+    ! --- Sub-interval 2: microtopo zone [-z_trunc, +z_trunc] ---
+    ! Uses 10-point GL (sufficient for bisection convergence)
+    z_lo = -z_trunc
+    z_hi =  z_trunc
+    z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
+    z_half = 0.5_kind_noahmp * (z_hi - z_lo)
+
+    A_sub = 0.0_kind_noahmp
+    do k = 1, n_gl
+       z_pt = z_mid + z_half * gl_nodes(k)
+       soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
+       h_pt = z_wt - z_pt
+       theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
+       A_sub = A_sub + gl_weights(k) * soil_frac * theta_val
+    enddo
+    A_soil = A_soil + A_sub * z_half
+
+  end function SoilWaterStorageMicroTopoLite
+
+  !========================================================================
   ! Total water storage [m] = soil + surface for water table at z_wt
   ! z_col_bot: soil column bottom depth [m], positive downward
   !========================================================================
@@ -648,42 +703,65 @@ contains
   end function FsoilMicroTopo
 
   !========================================================================
-  ! Water table depth from total water deficit
-  ! Given current soil moisture profile and microtopography, find the
-  ! equilibrium water table position z_wt such that the total water
-  ! storage (soil + surface) matches the given total water content.
+  ! Find water table from soil water storage (microtopo-aware)
   !
-  ! Uses bisection method on the monotonically increasing relationship
-  ! between z_wt and total water storage.
+  ! Given total soil water content [m] (sum of SoilLiqWater × dz),
+  ! bisects on SoilWaterStorageMicroTopoLite to find z_wt such that
+  ! the horizontally-integrated hydrostatic soil water equals the
+  ! observed amount.  Surface water is NOT included — it is a
+  ! diagnostic computed from SurfaceWaterStorage(z_wt) after the
+  ! water table is found.
   !
-  ! total_water_content: total water stored [m] in soil + surface
+  ! Uses warm-start bracketing when z_wt_prev is provided: starts
+  ! with a ±0.5 m bracket around the hint, expanding to the full
+  ! range [-z_col_bot, z_trunc] if the target is not contained.
+  !
+  ! soil_water_content: total soil water [m], sum of SoilLiqWater(i)*dz(i)
   ! theta_s, h_e, b_camp: Campbell soil parameters
   ! z_col_bot: soil column bottom depth [m], positive downward
+  ! z_wt_prev: optional warm-start hint (z_wt from previous timestep)
+  ! Returns:   z_wt [m], positive upward (D&B convention)
   !========================================================================
-  function FindWaterTable(total_water_content, theta_s, h_e, b_camp, z_col_bot) result(z_wt)
+  function FindWaterTable(soil_water_content, theta_s, h_e, b_camp, z_col_bot, z_wt_prev) result(z_wt)
     implicit none
-    real(kind=kind_noahmp), intent(in) :: total_water_content, theta_s, h_e, b_camp, z_col_bot
+    real(kind=kind_noahmp), intent(in) :: soil_water_content, theta_s, h_e, b_camp, z_col_bot
+    real(kind=kind_noahmp), intent(in), optional :: z_wt_prev
     real(kind=kind_noahmp) :: z_wt
     real(kind=kind_noahmp) :: z_lo, z_hi, z_mid, W_lo, W_hi, W_mid
     integer :: iter
-    integer, parameter :: max_iter = 60
+    integer, parameter :: max_iter = 30
     real(kind=kind_noahmp), parameter :: tol = 1.0e-5_kind_noahmp
+    real(kind=kind_noahmp), parameter :: warm_margin = 0.5_kind_noahmp
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
-    ! Bracket: z_wt can range from column bottom to above surface
-    z_lo = -z_col_bot          ! column bottom elevation
-    z_hi =  z_trunc            ! at truncation limit (top of hummocks)
-
-    W_lo = TotalWaterStorageMicroTopo(z_lo, theta_s, h_e, b_camp, z_col_bot)
-    W_hi = TotalWaterStorageMicroTopo(z_hi, theta_s, h_e, b_camp, z_col_bot)
+    ! Set up bracket with optional warm-start
+    if (present(z_wt_prev)) then
+       ! Try narrow bracket around previous timestep's z_wt
+       z_lo = max(-z_col_bot, z_wt_prev - warm_margin)
+       z_hi = min( z_trunc,   z_wt_prev + warm_margin)
+       W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
+       W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
+       ! Expand to full bracket if target not contained
+       if (soil_water_content < W_lo .or. soil_water_content > W_hi) then
+          z_lo = -z_col_bot
+          z_hi =  z_trunc
+          W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
+          W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
+       endif
+    else
+       z_lo = -z_col_bot
+       z_hi =  z_trunc
+       W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
+       W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
+    endif
 
     ! Check if target is within range
-    if (total_water_content <= W_lo) then
+    if (soil_water_content <= W_lo) then
        z_wt = z_lo
        return
     endif
-    if (total_water_content >= W_hi) then
+    if (soil_water_content >= W_hi) then
        z_wt = z_hi
        return
     endif
@@ -691,14 +769,14 @@ contains
     ! Bisection
     do iter = 1, max_iter
        z_mid = 0.5_kind_noahmp * (z_lo + z_hi)
-       W_mid = TotalWaterStorageMicroTopo(z_mid, theta_s, h_e, b_camp, z_col_bot)
+       W_mid = SoilWaterStorageMicroTopoLite(z_mid, theta_s, h_e, b_camp, z_col_bot)
 
-       if (abs(W_mid - total_water_content) < tol .or. (z_hi - z_lo) < tol) then
+       if (abs(W_mid - soil_water_content) < tol .or. (z_hi - z_lo) < tol) then
           z_wt = z_mid
           return
        endif
 
-       if (W_mid < total_water_content) then
+       if (W_mid < soil_water_content) then
           z_lo = z_mid
        else
           z_hi = z_mid
@@ -836,39 +914,56 @@ contains
   !========================================================================
   ! Hydrostatic equilibrium soil moisture for a FLAT surface layer
   !
-  ! Computes the average volumetric soil moisture in a layer at
-  ! hydrostatic equilibrium with a given water table depth, assuming
-  ! a flat surface (no microtopography).
+  ! Analytical closed-form average of the Campbell retention curve over
+  ! a layer at hydrostatic equilibrium.  No numerical quadrature needed.
   !
-  ! At depth d (positive downward), the pressure head is h = d - WTD.
-  ! Below the water table (d > WTD): h > 0, fully saturated.
-  ! Above the water table (d < WTD): h < 0, unsaturated per Campbell.
-  !
-  ! Uses 20-point Gauss-Legendre quadrature over the layer.
+  ! The soil column is split at d_sat = WTD - h_e:
+  !   d >= d_sat: saturated (within air-entry zone or below WT), theta = theta_s
+  !   d <  d_sat: unsaturated, theta = theta_s * ((WTD-d)/h_e)^(-1/b)
+  ! The unsaturated integral has the closed form:
+  !   theta_s * h_e^(1/b) * b/(b-1) * [u_top^((b-1)/b) - u_bot^((b-1)/b)]
+  ! where u = WTD - d is the suction at depth d.
   !
   ! d_top, d_bot: layer depth bounds [m], positive downward (d_top < d_bot)
   ! WTD:          water table depth [m], positive downward
   !========================================================================
-  function EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp) result(theta_eq)
+  pure function EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp) result(theta_eq)
     implicit none
     real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD, theta_s, h_e, b_camp
     real(kind=kind_noahmp) :: theta_eq
-    real(kind=kind_noahmp) :: d_mid, d_half, d_pt, h_pt
-    integer :: k
+    real(kind=kind_noahmp) :: layer_thick, d_sat
+    real(kind=kind_noahmp) :: bm1_over_b, b_over_bm1
+    real(kind=kind_noahmp) :: u_top, u_bot, integral_unsat
 
-    if (.not. gl_initialized) call InitGaussLegendre()
+    layer_thick = d_bot - d_top
 
-    d_mid  = 0.5_kind_noahmp * (d_top + d_bot)
-    d_half = 0.5_kind_noahmp * (d_bot - d_top)
+    ! d_sat = depth above which soil is unsaturated (suction > h_e)
+    d_sat = WTD - h_e
 
-    theta_eq = 0.0_kind_noahmp
-    do k = 1, n_gl
-       d_pt = d_mid + d_half * gl_nodes(k)
-       h_pt = d_pt - WTD  ! h > 0 below WT (saturated), h < 0 above (unsaturated)
-       theta_eq = theta_eq + gl_weights(k) * theta_campbell(h_pt, theta_s, h_e, b_camp)
-    enddo
-    ! GL integral / layer_thickness = (d_half * sum) / (2 * d_half) = sum / 2
-    theta_eq = theta_eq * d_half / (d_bot - d_top)
+    ! Case 1: entire layer at or below saturation boundary
+    if (d_top >= d_sat) then
+       theta_eq = theta_s
+       return
+    endif
+
+    bm1_over_b = (b_camp - 1.0_kind_noahmp) / b_camp
+    b_over_bm1 = b_camp / (b_camp - 1.0_kind_noahmp)
+
+    if (d_bot <= d_sat) then
+       ! Case 2: entire layer unsaturated
+       u_top = WTD - d_top   ! suction at layer top (> h_e)
+       u_bot = WTD - d_bot   ! suction at layer bottom (>= h_e)
+       integral_unsat = theta_s * h_e**(1.0_kind_noahmp / b_camp) * b_over_bm1 * &
+                        (u_top**bm1_over_b - u_bot**bm1_over_b)
+       theta_eq = integral_unsat / layer_thick
+    else
+       ! Case 3: layer spans saturation boundary at d_sat
+       u_top = WTD - d_top   ! suction at layer top
+       u_bot = h_e            ! suction at d_sat boundary
+       integral_unsat = theta_s * h_e**(1.0_kind_noahmp / b_camp) * b_over_bm1 * &
+                        (u_top**bm1_over_b - u_bot**bm1_over_b)
+       theta_eq = (integral_unsat + theta_s * (d_bot - d_sat)) / layer_thick
+    endif
 
   end function EquilibriumSMFlat
 
@@ -909,13 +1004,13 @@ contains
     d_half = 0.5_kind_noahmp * (d_bot - d_top)
 
     theta_eq = 0.0_kind_noahmp
-    do k = 1, n_gl
-       d_pt = d_mid + d_half * gl_nodes(k)
+    do k = 1, n_gl_lite
+       d_pt = d_mid + d_half * gl_nodes_lite(k)
        ! Soil fraction at depth d_pt: fraction of surface ABOVE elevation -d_pt
        soil_frac = 1.0_kind_noahmp - Fs_cdf(-d_pt)
        ! Pressure head at depth d_pt for WT at WTD
        h_pt = d_pt - WTD
-       theta_eq = theta_eq + gl_weights(k) * soil_frac * theta_campbell(h_pt, theta_s, h_e, b_camp)
+       theta_eq = theta_eq + gl_weights_lite(k) * soil_frac * theta_campbell(h_pt, theta_s, h_e, b_camp)
     enddo
     theta_eq = theta_eq * d_half / (d_bot - d_top)
 
