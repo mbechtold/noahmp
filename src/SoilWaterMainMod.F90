@@ -85,7 +85,8 @@ contains
     real(kind=kind_noahmp)            :: deficit_flat_peat             ! flat-surface deficit [m]
     real(kind=kind_noahmp)            :: SM_eq_flat_tmp                ! temporary flat equilibrium SM
     real(kind=kind_noahmp)            :: SM_eq_micro_tmp               ! temporary microtopo equilibrium SM
-    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqExcess ! excess SM above equilibrium [m3/m3]
+    real(kind=kind_noahmp)            :: SM_old_peat                   ! SoilLiqWater before transfer [m3/m3]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer gap added in forward transfer [m3/m3]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -198,7 +199,7 @@ contains
     ! profile for the Richards equation solver.
     ! ================================================================
     if ( OptPeatlandPhysics == 1 ) then
-       if (.not. allocated(SoilLiqExcess)) allocate(SoilLiqExcess(1:NumSoilLayer))
+       if (.not. allocated(SoilLiqGap)) allocate(SoilLiqGap(1:NumSoilLayer))
 
        thetas_peat    = SoilMoistureSat(1)
        ae_peat        = abs(SoilMatPotentialSat(1))
@@ -218,13 +219,13 @@ contains
           SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
               WaterTableDepth, thetas_peat, ae_peat, bb_peat)
 
-          ! Excess = departure from microtopo equilibrium
-          SoilLiqExcess(LoopInd1) = SoilLiqWater(LoopInd1) - SM_eq_micro_tmp
-
-          ! Map to flat 1D profile for Richards
-          SoilLiqWater(LoopInd1) = SM_eq_flat_tmp + SoilLiqExcess(LoopInd1)
+          ! Store the actual gap applied per layer for exact reversal
+          SM_old_peat = SoilLiqWater(LoopInd1)
+          SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) + (SM_eq_flat_tmp - SM_eq_micro_tmp)
           SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, &
               min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
+          ! Record actual change (accounts for clamping)
+          SoilLiqGap(LoopInd1) = SoilLiqWater(LoopInd1) - SM_old_peat
        enddo
     endif
 
@@ -472,24 +473,12 @@ contains
         f_soil = f_soil_mid
         
         ! --- 3 & 4. Backward excess transfer: flat 1D → microtopo ---
-        ! New excess = SoilLiqWater(flat) − SM_eq_flat_new  (departure in flat domain)
-        ! Final SoilLiqWater = SM_eq_micro_new + new excess  (mapped to microtopo)
+        ! Subtract the SAME per-layer gap that was added in the forward
+        ! transfer.  This is inherently water-conserving: the round-trip
+        ! adds and removes exactly the same amount per layer.
         do LoopInd2 = 1, NumSoilLayer
-           if (LoopInd2 == 1) then
-              d_top_peat = 0.0_kind_noahmp
-           else
-              d_top_peat = abs(DepthSoilLayer(LoopInd2 - 1))
-           endif
-           d_bot_peat = abs(DepthSoilLayer(LoopInd2))
-
-           SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
-               WaterTableDepth, thetas_peat, ae_peat, bb_peat)
-           SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-               WaterTableDepth, thetas_peat, ae_peat, bb_peat)
-
-           SoilLiqExcess(LoopInd2) = SoilLiqWater(LoopInd2) - SM_eq_flat_tmp
-           SoilLiqWater(LoopInd2)  = SM_eq_micro_tmp + SoilLiqExcess(LoopInd2)
-           SoilLiqWater(LoopInd2)  = max(0.001_kind_noahmp, &
+           SoilLiqWater(LoopInd2) = SoilLiqWater(LoopInd2) - SoilLiqGap(LoopInd2)
+           SoilLiqWater(LoopInd2) = max(0.001_kind_noahmp, &
                min(SoilEffPorosity(LoopInd2), SoilLiqWater(LoopInd2)))
         enddo
         
@@ -516,7 +505,7 @@ contains
     deallocate(MatLeft2  )
     deallocate(MatLeft3  )
     deallocate(SoilLiqTmp)
-    if (allocated(SoilLiqExcess)) deallocate(SoilLiqExcess)
+    if (allocated(SoilLiqGap)) deallocate(SoilLiqGap)
 
     end associate
 
