@@ -2,11 +2,16 @@ module RunoffSubSurfacePeatlandMod
 
 !!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme
 !!! Introduced by Chakraborty & Bechtold (2025), WTD equilibrium revised by Bechtold (2026)
+!!!
+!!! Note: WaterTableDepth is NOT re-diagnosed here. It is assumed to be
+!!! already set by the previous timestep's end (via FindWaterTableFlat in
+!!! SoilWaterMainMod) or by initialization. This avoids inconsistency when
+!!! SoilLiqWater represents microtopo-integrated values rather than a flat
+!!! 1D profile.
 
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use WaterTableEquilibriumPeatMod, only : WaterTableEquilibriumPeat
 
   implicit none
 
@@ -32,15 +37,16 @@ contains
 ! --------------------------------------------------------------------
     associate(                                                           &
               SoilImpervFracMax => noahmp%water%state%SoilImpervFracMax ,& ! in,    maximum soil imperviousness fraction
-              WaterTableDepth   => noahmp%water%state%WaterTableDepth   ,& ! out,   water table depth [m]
+              WaterTableDepth   => noahmp%water%state%WaterTableDepth   ,& ! in,    water table depth [m] (already diagnosed)
               FSW_change         => noahmp%water%state%FSW_change        ,& ! inout, 
               RunoffSubsurface  => noahmp%water%flux%RunoffSubsurface    & ! out,   subsurface runoff [mm/s] 
              )
 ! ----------------------------------------------------------------------
 
-    ! Compute equilibrium water table depth
-    ! With microtopography, WaterTableEquilibriumPeat handles all WTD ranges
-    call WaterTableEquilibriumPeat(noahmp)
+    ! WaterTableDepth is assumed valid from the previous timestep end or
+    ! from model initialization.  No re-diagnosis here — SoilLiqWater may
+    ! hold microtopo-integrated values that are incompatible with the flat
+    ! equilibrium deficit functions.
 
     ! ------------------------------------------
     ! Option 9: Ivanov-based Peatland Runoff Scheme (Chakraborty & Bechtold, 2025)

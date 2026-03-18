@@ -22,13 +22,15 @@ module SoilWaterMainMod
   use RunoffSubSurfacePeatlandMod,       only : RunoffSubSurfacePeatland
   use MicroTopoCorrectionMod,            only : MicroTopoCorrection
   use PeatlandPhysicsMod,                only : ApplyPeatlandPhysics
-  use PeatMicroTopoMod,                  only : FloodedFrac, FsoilMicroTopo
+  use PeatMicroTopoMod,                  only : FloodedFrac, FsoilMicroTopo, &
+                                                 EquilibriumSMFlat,           &
+                                                 EquilibriumSMMicroTopo,      &
+                                                 FindWaterTableFlat
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
   use TileDrainageSimpleMod,             only : TileDrainageSimple
   use TileDrainageHooghoudtMod,          only : TileDrainageHooghoudt
   use WaterTableEquilibriumMod,          only : WaterTableEquilibrium
-  use WaterTableEquilibriumPeatMod,      only : WaterTableEquilibriumPeat
 
   implicit none
 
@@ -77,6 +79,13 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft2     ! left-hand side term
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft3     ! left-hand side term
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqTmp   ! temporary soil liquid water [mm]
+    real(kind=kind_noahmp)            :: d_top_peat, d_bot_peat       ! layer depth bounds for peat [m]
+    real(kind=kind_noahmp)            :: z_col_bot_peat               ! column bottom depth [m]
+    real(kind=kind_noahmp)            :: thetas_peat, ae_peat, bb_peat! Campbell peat parameters
+    real(kind=kind_noahmp)            :: deficit_flat_peat             ! flat-surface deficit [m]
+    real(kind=kind_noahmp)            :: SM_eq_flat_tmp                ! temporary flat equilibrium SM
+    real(kind=kind_noahmp)            :: SM_eq_micro_tmp               ! temporary microtopo equilibrium SM
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqExcess ! excess SM above equilibrium [m3/m3]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -115,7 +124,8 @@ contains
               FSW_change             => noahmp%water%state%FSW_change               ,& ! inout,   surface storage change [mm]
               FloodedFraction        => noahmp%water%state%FloodedFraction          ,& ! inout,   flooded fraction [-]
               f_soil                 => noahmp%water%state%f_soil                   ,& ! inout, fraction of flux in and out of soil [-]
-              SoilLiqWaterMin        => noahmp%water%state%SoilLiqWaterMin          & ! out,   minimum soil liquid water content [m3/m3]
+              SoilLiqWaterMin        => noahmp%water%state%SoilLiqWaterMin         ,& ! out,   minimum soil liquid water content [m3/m3]
+              DepthSoilLayer         => noahmp%config%domain%DepthSoilLayer          & ! in,    depth [m] of layer-bottom from soil surface
              )
 ! ----------------------------------------------------------------------
 
@@ -168,10 +178,11 @@ contains
     ! subsurface runoff for runoff scheme option 2
     if ( OptRunoffSubsurface == 2 ) call RunoffSubSurfaceEquiWaterTable(noahmp)
     
-    ! Peatland-specific scheme (Chakraborty et al., 2025; revised Bechtold, 2026)
+    ! Peatland: Ivanov runoff (uses stored WTD) + forward excess transfer
+    ! (microtopo-integrated SoilLiqWater → flat 1D for Richards solver)
     if ( OptRunoffSubsurface == 9 ) then
             WaterTableDepthBegin = WaterTableDepth
-            call RunoffSubSurfacePeatland(noahmp) 
+            call RunoffSubSurfacePeatland(noahmp)
     endif
 
 
@@ -179,6 +190,43 @@ contains
     if ( FlagUrban .eqv. .true. ) SoilImpervFrac(1) = 0.95
     
     WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
+
+    ! ================================================================
+    ! Peatland forward excess transfer (Bechtold, 2026)
+    ! SoilLiqWater at this point = microtopo-integrated soil moisture.
+    ! Compute departure from microtopo equilibrium and map to flat 1D
+    ! profile for the Richards equation solver.
+    ! ================================================================
+    if ( OptPeatlandPhysics == 1 ) then
+       if (.not. allocated(SoilLiqExcess)) allocate(SoilLiqExcess(1:NumSoilLayer))
+
+       thetas_peat    = SoilMoistureSat(1)
+       ae_peat        = abs(SoilMatPotentialSat(1))
+       bb_peat        = SoilExpCoeffB(1)
+       z_col_bot_peat = abs(DepthSoilLayer(NumSoilLayer))
+
+       do LoopInd1 = 1, NumSoilLayer
+          if (LoopInd1 == 1) then
+             d_top_peat = 0.0_kind_noahmp
+          else
+             d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+          endif
+          d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+
+          SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+              WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+          SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
+              WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+
+          ! Excess = departure from microtopo equilibrium
+          SoilLiqExcess(LoopInd1) = SoilLiqWater(LoopInd1) - SM_eq_micro_tmp
+
+          ! Map to flat 1D profile for Richards
+          SoilLiqWater(LoopInd1) = SM_eq_flat_tmp + SoilLiqExcess(LoopInd1)
+          SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, &
+              min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
+       enddo
+    endif
 
     ! surface runoff and infiltration rate using different schemes
     ! MB: Alternative idea which will produce the same output as PEATCLSM: 
@@ -353,28 +401,36 @@ contains
          call RunoffSubSurfaceDrainage(noahmp)
     endif
     
-    ! Peatland: diagnose WTD and apply predictor-corrector on f_soil (Bechtold 2026)
-    ! The equilibrium assumption is used only internally to diagnose WTD, f_soil,
-    ! and FloodedFraction. The transient Richards soil moisture profile is preserved
-    ! as the model state for realistic surface soil moisture dynamics.
+    ! ================================================================
+    ! Peatland: diagnose WTD, predictor-corrector, and backward excess
+    ! transfer (flat 1D → microtopo-integrated SoilLiqWater).  (Bechtold, 2026)
+    !
+    ! After Richards, SoilLiqWater is a flat 1D profile.
+    ! 1. Diagnose new WTD from its deficit via SingleColumnDeficit bisection.
+    ! 2. Predictor-corrector: recompute f_soil at midpoint WTD and
+    !    redistribute flux between soil and surface.
+    ! 3. Compute new equilibrium profiles at final WTD.
+    ! 4. Transfer excess back to microtopo-integrated SoilLiqWater.
+    ! ================================================================
     if ( OptPeatlandPhysics == 1 ) then
-        ! === First pass: diagnose WTD from soil deficit ===
-        call WaterTableEquilibriumPeat(noahmp)
+        ! --- 1. Diagnose WTD from flat SoilLiqWater deficit ---
+        deficit_flat_peat = 0.0_kind_noahmp
+        do LoopInd2 = 1, NumSoilLayer
+           deficit_flat_peat = deficit_flat_peat + &
+               (thetas_peat - SoilLiqWater(LoopInd2)) * abs(ThicknessSnowSoilLayer(LoopInd2))
+        enddo
+        deficit_flat_peat = max(0.0_kind_noahmp, deficit_flat_peat)
+        WaterTableDepth = FindWaterTableFlat(deficit_flat_peat, thetas_peat, &
+            ae_peat, bb_peat, z_col_bot_peat)
         WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
         
-        ! === Corrector: re-evaluate f_soil at midpoint WTD ===
-        ! The initial f_soil was computed at WTD before Richards. Now we know
-        ! WTD after Richards. Recompute f_soil at the midpoint for a more
-        ! accurate flux partition, then redistribute the difference.
+        ! --- 2. Predictor-corrector on f_soil ---
         f_soil_old = f_soil
         f_soil_mid = FsoilMicroTopo( &
             -0.5_kind_noahmp * (WaterTableDepthPreSplit + WaterTableDepth), &
-            SoilMoistureSat(1), abs(SoilMatPotentialSat(1)), SoilExpCoeffB(1))
+            thetas_peat, ae_peat, bb_peat)
         
-        ! Compute flux correction [mm]:
-        ! FSW_change = (1-f_soil_old) * net_flux, so net_flux = FSW_change/(1-f_soil_old)
-        ! Correction = (f_soil_mid - f_soil_old) * net_flux
-        ! Positive correction = more water should have gone to soil
+        ! Compute flux correction [mm]
         if (abs(1.0_kind_noahmp - f_soil_old) > 1.0e-10_kind_noahmp) then
             net_total_flux_mm = FSW_change / (1.0_kind_noahmp - f_soil_old)
             flux_correction_mm = (f_soil_mid - f_soil_old) * net_total_flux_mm
@@ -383,37 +439,59 @@ contains
         endif
         
         ! Apply correction: move water between surface and soil
-        ! Track ACTUAL soil change to preserve water balance (clamp may limit absorption)
         if (abs(flux_correction_mm) > 1.0e-12_kind_noahmp) then
-            ! Distribute correction uniformly across soil layers
             SoilDepthTotal = 0.0_kind_noahmp
             do LoopInd2 = 1, NumSoilLayer
                 SoilDepthTotal = SoilDepthTotal + ThicknessSnowSoilLayer(LoopInd2)
             enddo
             delta_theta = flux_correction_mm / (SoilDepthTotal * 1000.0_kind_noahmp)
-
-            ! Compute actual soil moisture change (respecting saturation/zero clamp)
             actual_correction_mm = 0.0_kind_noahmp
             do LoopInd2 = 1, NumSoilLayer
                 SoilLiqTmp(LoopInd2) = SoilLiqWater(LoopInd2)
                 SoilLiqWater(LoopInd2) = SoilLiqWater(LoopInd2) + delta_theta
                 SoilLiqWater(LoopInd2) = max(0.0_kind_noahmp, &
-                    min(SoilMoistureSat(LoopInd2) - SoilIce(LoopInd2), SoilLiqWater(LoopInd2)))
+                    min(SoilEffPorosity(LoopInd2), SoilLiqWater(LoopInd2)))
                 actual_correction_mm = actual_correction_mm + &
-                    (SoilLiqWater(LoopInd2) - SoilLiqTmp(LoopInd2)) * ThicknessSnowSoilLayer(LoopInd2) * 1000.0_kind_noahmp
+                    (SoilLiqWater(LoopInd2) - SoilLiqTmp(LoopInd2)) * &
+                     ThicknessSnowSoilLayer(LoopInd2) * 1000.0_kind_noahmp
             enddo
-
-            ! Adjust FSW_change by the ACTUAL amount absorbed/released by soil
-            ! This ensures water balance closure even when clamp limits the correction
             FSW_change = FSW_change - actual_correction_mm
             
-            ! Re-diagnose WTD with corrected soil moisture
-            call WaterTableEquilibriumPeat(noahmp)
+            ! Re-diagnose WTD after correction
+            deficit_flat_peat = 0.0_kind_noahmp
+            do LoopInd2 = 1, NumSoilLayer
+               deficit_flat_peat = deficit_flat_peat + &
+                   (thetas_peat - SoilLiqWater(LoopInd2)) * abs(ThicknessSnowSoilLayer(LoopInd2))
+            enddo
+            deficit_flat_peat = max(0.0_kind_noahmp, deficit_flat_peat)
+            WaterTableDepth = FindWaterTableFlat(deficit_flat_peat, thetas_peat, &
+                ae_peat, bb_peat, z_col_bot_peat)
             WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
         endif
         
-        ! Store corrected f_soil for next timestep
         f_soil = f_soil_mid
+        
+        ! --- 3 & 4. Backward excess transfer: flat 1D → microtopo ---
+        ! New excess = SoilLiqWater(flat) − SM_eq_flat_new  (departure in flat domain)
+        ! Final SoilLiqWater = SM_eq_micro_new + new excess  (mapped to microtopo)
+        do LoopInd2 = 1, NumSoilLayer
+           if (LoopInd2 == 1) then
+              d_top_peat = 0.0_kind_noahmp
+           else
+              d_top_peat = abs(DepthSoilLayer(LoopInd2 - 1))
+           endif
+           d_bot_peat = abs(DepthSoilLayer(LoopInd2))
+
+           SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
+               WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+           SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+               WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+
+           SoilLiqExcess(LoopInd2) = SoilLiqWater(LoopInd2) - SM_eq_flat_tmp
+           SoilLiqWater(LoopInd2)  = SM_eq_micro_tmp + SoilLiqExcess(LoopInd2)
+           SoilLiqWater(LoopInd2)  = max(0.001_kind_noahmp, &
+               min(SoilEffPorosity(LoopInd2), SoilLiqWater(LoopInd2)))
+        enddo
         
         ! Update FloodedFraction from final WTD
         FloodedFraction = FloodedFrac(-WaterTableDepth)
@@ -438,6 +516,7 @@ contains
     deallocate(MatLeft2  )
     deallocate(MatLeft3  )
     deallocate(SoilLiqTmp)
+    if (allocated(SoilLiqExcess)) deallocate(SoilLiqExcess)
 
     end associate
 

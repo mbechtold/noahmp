@@ -833,4 +833,153 @@ contains
 
   end function EffSoilThickMicroTopo
 
+  !========================================================================
+  ! Hydrostatic equilibrium soil moisture for a FLAT surface layer
+  !
+  ! Computes the average volumetric soil moisture in a layer at
+  ! hydrostatic equilibrium with a given water table depth, assuming
+  ! a flat surface (no microtopography).
+  !
+  ! At depth d (positive downward), the pressure head is h = d - WTD.
+  ! Below the water table (d > WTD): h > 0, fully saturated.
+  ! Above the water table (d < WTD): h < 0, unsaturated per Campbell.
+  !
+  ! Uses 20-point Gauss-Legendre quadrature over the layer.
+  !
+  ! d_top, d_bot: layer depth bounds [m], positive downward (d_top < d_bot)
+  ! WTD:          water table depth [m], positive downward
+  !========================================================================
+  function EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp) result(theta_eq)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: theta_eq
+    real(kind=kind_noahmp) :: d_mid, d_half, d_pt, h_pt
+    integer :: k
+
+    if (.not. gl_initialized) call InitGaussLegendre()
+
+    d_mid  = 0.5_kind_noahmp * (d_top + d_bot)
+    d_half = 0.5_kind_noahmp * (d_bot - d_top)
+
+    theta_eq = 0.0_kind_noahmp
+    do k = 1, n_gl
+       d_pt = d_mid + d_half * gl_nodes(k)
+       h_pt = d_pt - WTD  ! h > 0 below WT (saturated), h < 0 above (unsaturated)
+       theta_eq = theta_eq + gl_weights(k) * theta_campbell(h_pt, theta_s, h_e, b_camp)
+    enddo
+    ! GL integral / layer_thickness = (d_half * sum) / (2 * d_half) = sum / 2
+    theta_eq = theta_eq * d_half / (d_bot - d_top)
+
+  end function EquilibriumSMFlat
+
+  !========================================================================
+  ! Hydrostatic equilibrium soil moisture integrated over microtopography
+  ! (SOIL WATER ONLY — no surface water in hollows)
+  !
+  ! Computes the average volumetric soil moisture in a layer, weighted by
+  ! the fraction of the microtopographic surface that has soil at each
+  ! depth:
+  !
+  !   theta_eq = (1 / layer_thick) *
+  !              integral_{d_top}^{d_bot} (1 - Fs(-d)) * theta(d - WTD) dd
+  !
+  ! where (1 - Fs(-d)) = fraction of area with soil at depth d, and
+  ! theta(d - WTD) is the Campbell retention at hydrostatic pressure.
+  !
+  ! This gives total soil water in the layer divided by layer thickness.
+  ! Surface water in hollows is NOT included (tracked via FSW_change).
+  !
+  ! The result is always <= theta_s because (1 - Fs(-d)) <= 1.
+  ! For deep layers (d >> z_trunc), soil_frac -> 1 and the result
+  ! converges to the flat-surface equilibrium.
+  !
+  ! d_top, d_bot: layer depth bounds [m], positive downward (d_top < d_bot)
+  ! WTD:          water table depth [m], positive downward
+  !========================================================================
+  function EquilibriumSMMicroTopo(d_top, d_bot, WTD, theta_s, h_e, b_camp) result(theta_eq)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: theta_eq
+    real(kind=kind_noahmp) :: d_mid, d_half, d_pt, h_pt, soil_frac
+    integer :: k
+
+    if (.not. gl_initialized) call InitGaussLegendre()
+
+    d_mid  = 0.5_kind_noahmp * (d_top + d_bot)
+    d_half = 0.5_kind_noahmp * (d_bot - d_top)
+
+    theta_eq = 0.0_kind_noahmp
+    do k = 1, n_gl
+       d_pt = d_mid + d_half * gl_nodes(k)
+       ! Soil fraction at depth d_pt: fraction of surface ABOVE elevation -d_pt
+       soil_frac = 1.0_kind_noahmp - Fs_cdf(-d_pt)
+       ! Pressure head at depth d_pt for WT at WTD
+       h_pt = d_pt - WTD
+       theta_eq = theta_eq + gl_weights(k) * soil_frac * theta_campbell(h_pt, theta_s, h_e, b_camp)
+    enddo
+    theta_eq = theta_eq * d_half / (d_bot - d_top)
+
+  end function EquilibriumSMMicroTopo
+
+  !========================================================================
+  ! Find water table depth from flat-surface soil moisture deficit.
+  !
+  ! Given the total column deficit [m] computed from a flat 1D soil
+  ! moisture profile:
+  !   deficit = sum_layers( (theta_s - SM(i)) * dz(i) )
+  !
+  ! finds WTD such that SingleColumnDeficit(WTD) = deficit.
+  !
+  ! Uses bisection on the monotonically increasing SingleColumnDeficit.
+  !
+  ! deficit:   target deficit [m], must be >= 0
+  ! z_col_bot: maximum column depth [m], positive downward
+  ! Returns:   WTD [m], positive downward (0 = surface, z_col_bot = bottom)
+  !========================================================================
+  function FindWaterTableFlat(deficit, theta_s, h_e, b_camp, z_col_bot) result(WTD)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: deficit, theta_s, h_e, b_camp, z_col_bot
+    real(kind=kind_noahmp) :: WTD
+    real(kind=kind_noahmp) :: zwt_lo, zwt_hi, zwt_mid, def_mid
+    integer :: iter
+    integer, parameter :: max_iter = 60
+    real(kind=kind_noahmp), parameter :: tol = 1.0e-5_kind_noahmp
+
+    ! If deficit is negligible, water table is at the surface
+    if (deficit <= tol) then
+       WTD = 0.0_kind_noahmp
+       return
+    endif
+
+    ! Bisection range: WTD from 0 (surface) to z_col_bot (column bottom)
+    zwt_lo = 0.0_kind_noahmp
+    zwt_hi = z_col_bot
+
+    ! Check if deficit exceeds column capacity
+    if (SingleColumnDeficit(zwt_hi, theta_s, h_e, b_camp) < deficit) then
+       WTD = zwt_hi
+       return
+    endif
+
+    ! Bisection
+    do iter = 1, max_iter
+       zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
+       def_mid = SingleColumnDeficit(zwt_mid, theta_s, h_e, b_camp)
+
+       if (abs(def_mid - deficit) < tol .or. (zwt_hi - zwt_lo) < tol) then
+          WTD = zwt_mid
+          return
+       endif
+
+       if (def_mid < deficit) then
+          zwt_lo = zwt_mid   ! deficit too small → go deeper
+       else
+          zwt_hi = zwt_mid   ! deficit too large → go shallower
+       endif
+    enddo
+
+    WTD = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
+
+  end function FindWaterTableFlat
+
 end module PeatMicroTopoMod
