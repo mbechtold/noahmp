@@ -127,9 +127,12 @@ contains
        enddo
        ! accumualted water change (only for canopy and snow during non-soil timestep)
        SfcWaterTotChgAcc = SfcWaterTotChgAcc + (WaterStorageTotEnd - WaterStorageTotBeg)  ! snow, canopy, and soil water change
-       if ( OptPeatlandPhysics == 1 ) then
+       ! FSW_change is only computed inside SoilWaterMain (soil timestep).
+       ! Between soil timesteps the variable retains its old value, so it
+       ! must be added only when FlagSoilProcess is true to avoid counting
+       ! the previous period's FSW_change at every main timestep.
+       if ( (OptPeatlandPhysics == 1) .and. (FlagSoilProcess .eqv. .true.) ) then
            SfcWaterTotChgAcc = SfcWaterTotChgAcc + FSW_change
-           !write(*,*) "Checking Surface water storage: FSW_change"
        endif
        PrecipTotAcc      = PrecipTotAcc      + PrecipTotRefHeight * MainTimeStep          ! accumulated precip 
        EvapCanopyNetAcc  = EvapCanopyNetAcc  + EvapCanopyNet      * MainTimeStep          ! accumulated canopy evapo
