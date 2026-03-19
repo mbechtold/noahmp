@@ -63,9 +63,7 @@ contains
               SoilMoistureToWT          => noahmp%water%state%SoilMoistureToWT            ,& ! in,  soil moisture between bottom of the soil and the water table
               SoilWatConductivity       => noahmp%water%state%SoilWatConductivity         ,& ! out, soil hydraulic conductivity [m/s]
               SoilWatDiffusivity        => noahmp%water%state%SoilWatDiffusivity          ,& ! out, soil water diffusivity [m2/s]
-              FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout,   surface storage change [mm]
-              f_soil                    => noahmp%water%state%f_soil                      ,& ! inout, fraction of flux in and out of soil [-]
-              AR1                       => noahmp%water%state%AR1                         ,& ! inout, fraction of flux in and out of soil [-]
+              f_soil                    => noahmp%water%state%f_soil                      ,& ! in,  Sy-weighted flux partition fraction [-]
               DrainSoilBot              => noahmp%water%flux%DrainSoilBot                  & ! out, soil bottom drainage [m/s]
              )
 ! ----------------------------------------------------------------------
@@ -115,13 +113,10 @@ contains
           SoilWaterGrad(LoopInd)    = 2.0 * (SoilMoistureTmp(LoopInd)-SoilMoistureTmp(LoopInd+1)) / DepthSnowSoilTmp
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
-          !if (OptRunoffSubsurface == 9) then
+          ! For peatlands: suppress Richards when nearly all flux goes to surface water
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
+             if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                            InfilRateSfc + f_soil*TranspWatLossSoilMean(LoopInd) + f_soil*EvapSoilSfcLiqMean
              endif
           endif
        else if ( LoopInd < NumSoilLayer ) then
@@ -132,14 +127,10 @@ contains
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
                                       TranspWatLossSoilMean(LoopInd)
-          !if (OptRunoffSubsurface == 9) then
+          ! For peatlands: suppress Richards when nearly all flux goes to surface water
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
+             if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                      SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
-                                      f_soil*TranspWatLossSoilMean(LoopInd)
              endif
           endif
        else
@@ -172,13 +163,10 @@ contains
           endif
           WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
                                  TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-          !if (OptRunoffSubsurface == 9) then
+          ! For peatlands: suppress Richards when nearly all flux goes to surface water
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
+             if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
-                                 f_soil*TranspWatLossSoilMean(LoopInd) + DrainSoilBot
              endif
           endif
        endif

@@ -132,8 +132,8 @@ module WaterVarType
     real(kind=kind_noahmp) :: SoilWaterRootZone          ! root zone soil water
     real(kind=kind_noahmp) :: SoilWaterStress            ! soil water stress
     real(kind=kind_noahmp) :: FSW_change                 ! Free surface water storage change [mm] 
-    real(kind=kind_noahmp) :: f_soil                     ! 
-    real(kind=kind_noahmp) :: AR1                        ! 
+    real(kind=kind_noahmp) :: f_soil                     ! Sy-weighted flux partition fraction [-]
+    real(kind=kind_noahmp) :: FloodedFrac                ! Flooded fraction from Gaussian microtopo [-]
     real(kind=kind_noahmp) :: WaterStorageTotBeg         ! total water storage [mm] at the begining before NoahMP process
     real(kind=kind_noahmp) :: WaterBalanceError          ! water balance error [mm]
     real(kind=kind_noahmp) :: WaterStorageTotEnd         ! total water storage [mm] at the end of NoahMP process
