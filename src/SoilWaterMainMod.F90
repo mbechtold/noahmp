@@ -424,13 +424,33 @@ contains
     if ( OptPeatlandPhysics == 1 ) then
         ! --- 1. Backward excess transfer: flat 1D → microtopo ---
         ! Subtract the SAME per-layer gap that was added in the forward
-        ! transfer.  This is inherently water-conserving: the round-trip
-        ! adds and removes exactly the same amount per layer.
+        ! transfer.  No clamping: the total column water is conserved
+        ! by construction because the same gap is added in the forward
+        ! step and subtracted here.  Individual layers may transiently
+        ! deviate slightly from [0, theta_s] when Richards or runoff
+        ! removal altered the profile between transfers, but this is
+        ! harmless and preserves mass.
         do LoopInd2 = 1, NumSoilLayer
            SoilLiqWater(LoopInd2) = SoilLiqWater(LoopInd2) - SoilLiqGap(LoopInd2)
-           SoilLiqWater(LoopInd2) = max(0.001_kind_noahmp, &
-               min(SoilEffPorosity(LoopInd2), SoilLiqWater(LoopInd2)))
         enddo
+
+        ! Safety: prevent negative SoilLiqWater (would cause NaN in
+        ! hydraulic property computations at the next timestep).
+        ! Borrow water from the layer below — conservative within the
+        ! column.  This mirrors the existing SoilLiqTmp safety block
+        ! and should rarely if ever activate.
+        do LoopInd2 = 1, NumSoilLayer - 1
+           if (SoilLiqWater(LoopInd2) < 1.0e-4_kind_noahmp) then
+              SoilWatRem = (1.0e-4_kind_noahmp - SoilLiqWater(LoopInd2)) * &
+                           abs(ThicknessSnowSoilLayer(LoopInd2)) * 1000.0_kind_noahmp  ! [mm]
+              SoilLiqWater(LoopInd2) = 1.0e-4_kind_noahmp
+              SoilLiqWater(LoopInd2+1) = SoilLiqWater(LoopInd2+1) - &
+                  SoilWatRem / (abs(ThicknessSnowSoilLayer(LoopInd2+1)) * 1000.0_kind_noahmp)
+           endif
+        enddo
+        if (SoilLiqWater(NumSoilLayer) < 1.0e-4_kind_noahmp) then
+           SoilLiqWater(NumSoilLayer) = 1.0e-4_kind_noahmp  ! last resort
+        endif
 
         ! --- 2. Diagnose final WTD (microtopo-aware) ---
         W_soil_peat = 0.0_kind_noahmp
