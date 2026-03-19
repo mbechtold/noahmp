@@ -58,6 +58,11 @@ module PeatMicroTopoMod
   integer, parameter :: n_gl_fine = 100
   real(kind=kind_noahmp), dimension(n_gl_fine) :: gl_nodes_fine, gl_weights_fine
 
+  ! Precomputed quadrature coefficients for microtopo-zone integrals
+  ! wt_soil_micro(k) = gl_weights(k) * (1 - Fs_cdf(z_trunc * gl_nodes(k)))
+  ! Eliminates repeated Fs_cdf/erf_approx calls in hot GL loops
+  real(kind=kind_noahmp), dimension(n_gl) :: wt_soil_micro
+
   ! Flag for initialization
   logical, save :: gl_initialized = .false.
 
@@ -71,6 +76,7 @@ contains
   !========================================================================
   subroutine InitGaussLegendre()
     implicit none
+    integer :: k
 
     ! 10-point Gauss-Legendre nodes (on [-1,1]) and weights
     gl_nodes( 1) = -0.9739065285171717_kind_noahmp
@@ -110,6 +116,13 @@ contains
 
     ! Compute 100-point Gauss-Legendre via Newton iteration
     call ComputeGaussLegendre(n_gl_fine, gl_nodes_fine, gl_weights_fine)
+
+    ! Precompute weighted soil fractions at microtopo-zone GL nodes
+    ! Physical z = z_trunc * gl_nodes(k) for domain [-z_trunc, +z_trunc]
+    do k = 1, n_gl
+       wt_soil_micro(k) = gl_weights(k) * &
+           (1.0_kind_noahmp - Fs_cdf(z_trunc * gl_nodes(k)))
+    enddo
 
     gl_initialized = .true.
 
@@ -389,48 +402,47 @@ contains
     implicit none
     real(kind=kind_noahmp), intent(in) :: z_wt, theta_s, h_e, b_camp, z_col_bot
     real(kind=kind_noahmp) :: A_soil
-    real(kind=kind_noahmp) :: z_lo, z_hi, z_mid, z_half, z_pt, h_pt
-    real(kind=kind_noahmp) :: soil_frac, theta_val, A_sub
+    real(kind=kind_noahmp) :: h_pt, inv_b, A_sub, z_mid_d, z_half_d
     integer :: k
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
     A_soil = 0.0_kind_noahmp
+    inv_b  = -1.0_kind_noahmp / b_camp
 
-    ! --- Sub-interval 1: deep zone [-z_col_bot, -z_trunc] ---
+    ! --- Deep zone [-z_col_bot, -z_trunc]: soil_frac ≈ 1 (Fs negligible) ---
     if (z_col_bot > z_trunc) then
-      z_lo = -z_col_bot
-      z_hi = -z_trunc
-      z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
-      z_half = 0.5_kind_noahmp * (z_hi - z_lo)
-
-      A_sub = 0.0_kind_noahmp
-      do k = 1, n_gl
-         z_pt = z_mid + z_half * gl_nodes(k)
-         soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
-         h_pt = z_wt - z_pt
-         theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
-         A_sub = A_sub + gl_weights(k) * soil_frac * theta_val
-      enddo
-      A_soil = A_soil + A_sub * z_half
+       if (z_wt >= -(z_trunc + h_e)) then
+          ! Entire deep zone saturated (common case for peatland WTDs)
+          A_soil = theta_s * (z_col_bot - z_trunc)
+       else
+          ! Partially unsaturated — GL without Fs_cdf (soil_frac = 1)
+          z_mid_d  = -0.5_kind_noahmp * (z_col_bot + z_trunc)
+          z_half_d =  0.5_kind_noahmp * (z_col_bot - z_trunc)
+          A_sub = 0.0_kind_noahmp
+          do k = 1, n_gl
+             h_pt = z_wt - (z_mid_d + z_half_d * gl_nodes(k))
+             if (h_pt >= -h_e) then
+                A_sub = A_sub + gl_weights(k) * theta_s
+             else
+                A_sub = A_sub + gl_weights(k) * theta_s * (abs(h_pt) / h_e) ** inv_b
+             endif
+          enddo
+          A_soil = A_sub * z_half_d
+       endif
     endif
 
-    ! --- Sub-interval 2: microtopo zone [-z_trunc, +z_trunc] ---
-    ! Uses 10-point GL (sufficient for bisection convergence)
-    z_lo = -z_trunc
-    z_hi =  z_trunc
-    z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
-    z_half = 0.5_kind_noahmp * (z_hi - z_lo)
-
+    ! --- Microtopo zone [-z_trunc, +z_trunc]: precomputed soil fractions ---
     A_sub = 0.0_kind_noahmp
     do k = 1, n_gl
-       z_pt = z_mid + z_half * gl_nodes(k)
-       soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
-       h_pt = z_wt - z_pt
-       theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
-       A_sub = A_sub + gl_weights(k) * soil_frac * theta_val
+       h_pt = z_wt - z_trunc * gl_nodes(k)
+       if (h_pt >= -h_e) then
+          A_sub = A_sub + wt_soil_micro(k) * theta_s
+       else
+          A_sub = A_sub + wt_soil_micro(k) * theta_s * (abs(h_pt) / h_e) ** inv_b
+       endif
     enddo
-    A_soil = A_soil + A_sub * z_half
+    A_soil = A_soil + A_sub * z_trunc
 
   end function SoilWaterStorageMicroTopoLite
 
@@ -574,8 +586,7 @@ contains
     implicit none
     real(kind=kind_noahmp), intent(in) :: z_l, z_u, theta_s, h_e, b_camp
     real(kind=kind_noahmp) :: sy
-    real(kind=kind_noahmp) :: dz, z_lo, z_hi, z_mid, z_half, z_pt
-    real(kind=kind_noahmp) :: soil_frac, theta_u, theta_l
+    real(kind=kind_noahmp) :: dz, theta_u, theta_l
     integer :: k
 
     if (.not. gl_initialized) call InitGaussLegendre()
@@ -586,21 +597,14 @@ contains
        return
     endif
 
-    z_lo = -z_trunc
-    z_hi =  z_trunc
-
-    z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
-    z_half = 0.5_kind_noahmp * (z_hi - z_lo)
-
+    ! Use precomputed wt_soil_micro (= gl_weights * soil_frac at GL nodes)
     sy = 0.0_kind_noahmp
     do k = 1, n_gl
-       z_pt = z_mid + z_half * gl_nodes(k)
-       soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
-       theta_u = theta_campbell(z_u - z_pt, theta_s, h_e, b_camp)
-       theta_l = theta_campbell(z_l - z_pt, theta_s, h_e, b_camp)
-       sy = sy + gl_weights(k) * soil_frac * (theta_u - theta_l)
+       theta_u = theta_campbell(z_u - z_trunc * gl_nodes(k), theta_s, h_e, b_camp)
+       theta_l = theta_campbell(z_l - z_trunc * gl_nodes(k), theta_s, h_e, b_camp)
+       sy = sy + wt_soil_micro(k) * (theta_u - theta_l)
     enddo
-    sy = sy * z_half / dz
+    sy = sy * z_trunc / dz
 
     sy = max(0.0_kind_noahmp, sy)
 
@@ -727,22 +731,27 @@ contains
     real(kind=kind_noahmp), intent(in) :: soil_water_content, theta_s, h_e, b_camp, z_col_bot
     real(kind=kind_noahmp), intent(in), optional :: z_wt_prev
     real(kind=kind_noahmp) :: z_wt
-    real(kind=kind_noahmp) :: z_lo, z_hi, z_mid, W_lo, W_hi, W_mid
-    integer :: iter
-    integer, parameter :: max_iter = 30
+    real(kind=kind_noahmp) :: z_lo, z_hi, z_new, W_lo, W_hi
+    real(kind=kind_noahmp) :: W_val, dW_val, h_pt, theta_val, inv_b, A_deep
+    integer :: iter, k
+    integer, parameter :: max_iter = 20
     real(kind=kind_noahmp), parameter :: tol = 1.0e-5_kind_noahmp
     real(kind=kind_noahmp), parameter :: warm_margin = 0.5_kind_noahmp
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
-    ! Set up bracket with optional warm-start
+    inv_b = -1.0_kind_noahmp / b_camp
+
+    ! Deep-zone contribution (constant when fully saturated = common case)
+    A_deep = 0.0_kind_noahmp
+    if (z_col_bot > z_trunc) A_deep = theta_s * (z_col_bot - z_trunc)
+
+    ! --- Set up bracket with optional warm-start ---
     if (present(z_wt_prev)) then
-       ! Try narrow bracket around previous timestep's z_wt
        z_lo = max(-z_col_bot, z_wt_prev - warm_margin)
        z_hi = min( z_trunc,   z_wt_prev + warm_margin)
        W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
        W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
-       ! Expand to full bracket if target not contained
        if (soil_water_content < W_lo .or. soil_water_content > W_hi) then
           z_lo = -z_col_bot
           z_hi =  z_trunc
@@ -756,34 +765,63 @@ contains
        W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
     endif
 
-    ! Check if target is within range
     if (soil_water_content <= W_lo) then
-       z_wt = z_lo
-       return
+       z_wt = z_lo;  return
     endif
     if (soil_water_content >= W_hi) then
-       z_wt = z_hi
-       return
+       z_wt = z_hi;  return
     endif
 
-    ! Bisection
-    do iter = 1, max_iter
-       z_mid = 0.5_kind_noahmp * (z_lo + z_hi)
-       W_mid = SoilWaterStorageMicroTopoLite(z_mid, theta_s, h_e, b_camp, z_col_bot)
+    ! --- Safeguarded Newton-Raphson ---
+    ! Start from warm-start hint (clamped to bracket) or midpoint
+    if (present(z_wt_prev)) then
+       z_wt = max(z_lo, min(z_hi, z_wt_prev))
+    else
+       z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
+    endif
 
-       if (abs(W_mid - soil_water_content) < tol .or. (z_hi - z_lo) < tol) then
-          z_wt = z_mid
-          return
+    do iter = 1, max_iter
+       ! Compute W(z_wt) and dW/dz_wt in a single pass
+       ! Deep zone: fully saturated → constant, derivative = 0
+       W_val  = A_deep
+       dW_val = 0.0_kind_noahmp
+       ! Microtopo zone: use precomputed wt_soil_micro
+       do k = 1, n_gl
+          h_pt = z_wt - z_trunc * gl_nodes(k)
+          if (h_pt >= -h_e) then
+             W_val = W_val + wt_soil_micro(k) * theta_s * z_trunc
+          else
+             theta_val = theta_s * (abs(h_pt) / h_e) ** inv_b
+             W_val  = W_val  + wt_soil_micro(k) * theta_val * z_trunc
+             dW_val = dW_val + wt_soil_micro(k) * theta_val / &
+                      (b_camp * abs(h_pt)) * z_trunc
+          endif
+       enddo
+
+       if (abs(W_val - soil_water_content) < tol) return
+
+       ! Update bracket
+       if (W_val < soil_water_content) then
+          z_lo = z_wt
+       else
+          z_hi = z_wt
+       endif
+       if ((z_hi - z_lo) < tol) then
+          z_wt = 0.5_kind_noahmp * (z_lo + z_hi);  return
        endif
 
-       if (W_mid < soil_water_content) then
-          z_lo = z_mid
+       ! Newton step with bracket safeguard
+       if (dW_val > 1.0e-12_kind_noahmp) then
+          z_new = z_wt + (soil_water_content - W_val) / dW_val
+          if (z_new > z_lo .and. z_new < z_hi) then
+             z_wt = z_new
+          else
+             z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
+          endif
        else
-          z_hi = z_mid
+          z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
        endif
     enddo
-
-    z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
 
   end function FindWaterTable
 
@@ -997,6 +1035,14 @@ contains
     real(kind=kind_noahmp) :: theta_eq
     real(kind=kind_noahmp) :: d_mid, d_half, d_pt, h_pt, soil_frac
     integer :: k
+
+    ! Fast path: for layers well below the microtopo zone (d_top > ~2.3*sigma),
+    ! soil_frac ≈ 1 everywhere and the result equals EquilibriumSMFlat.
+    ! Avoids 5-pt GL quadrature + Fs_cdf calls for layers 3 and 4.
+    if (d_top > 2.326_kind_noahmp * sigma_elev) then
+       theta_eq = EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp)
+       return
+    endif
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
