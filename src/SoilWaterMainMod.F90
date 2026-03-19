@@ -244,13 +244,10 @@ contains
        ! --- Step 7: Standard Richards (4 layers, unmodified) ---
        ! InfilRateSfc already contains only the soil portion
        ! Transpiration and EvapGroundNet are handled inside Richards as usual
+       ! NOTE: RunoffSurface routines are NOT called inside the loop for peatlands
+       ! because we handle infiltration partitioning ourselves (f_soil scaling).
+       ! Calling them would overwrite InfilRateSfc with SoilSfcInflowMean.
        do IndIter = 1, NumIterSoilWat
-          if ( SoilSfcInflowMean > 0.0 ) then
-             if ( OptRunoffSurface == 3 ) call RunoffSurfaceFreeDrain(noahmp,TimeStepFine)
-             if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,TimeStepFine)
-             if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,TimeStepFine)
-             if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,TimeStepFine,InfilSfcAcc)
-          endif
           call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
           call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
           SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
@@ -384,8 +381,11 @@ contains
        call WaterTableEquilibriumPeat(noahmp)
        WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
 
-       ! --- Step 12: FSW_change definitionally from WTD boundaries ---
-       FSW_change = SurfaceWaterStorage_mm(WaterTableDepth, sigma_z) - W_surface_begin
+       ! --- Step 12: FSW_change from explicit surface water budget ---
+       ! Remove (1-f_soil) share of RunoffSubsurface from surface water
+       W_surface_end = W_surface_end - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+       W_surface_end = max(0.0_kind_noahmp, W_surface_end)
+       FSW_change = W_surface_end - W_surface_begin
 
        ! Finalize Richards outputs
        DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
