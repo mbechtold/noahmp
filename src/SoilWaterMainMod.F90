@@ -225,12 +225,14 @@ contains
     !=========================================================================
     if ( OptPeatlandPhysics == 1 ) then
 
-       ! --- Step 1: Save beginning-of-timestep surface water storage ---
-       W_surface_begin = SurfaceWaterStorage_mm(WaterTableDepth, sigma_z)
-
-       ! --- Step 2: Diagnose WTD from current soil moisture ---
+       ! --- Step 1: Diagnose WTD from current soil moisture ---
+       ! Must come BEFORE W_surface_begin so that WTD is consistent
+       ! with the current soil moisture state (not stale from previous timestep).
        call WaterTableEquilibriumPeat(noahmp)
        WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
+
+       ! --- Step 2: Save beginning-of-timestep surface water storage ---
+       W_surface_begin = SurfaceWaterStorage_mm(WaterTableDepth, sigma_z)
 
        ! --- Step 3: Compute FloodedFrac and f_soil (= f_part) ---
        call MicroTopoCorrection(noahmp)

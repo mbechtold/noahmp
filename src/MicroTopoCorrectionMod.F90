@@ -74,14 +74,10 @@ contains
     real(kind=kind_noahmp) :: u  ! standardized variable
 
     u = -WTD / sigma
-    ! Partial expectation: E[max(-WTD - z_s, 0)] = sigma*phi(u) + (-WTD)*Phi(u)
-    ! where phi is std normal pdf, Phi is std normal CDF
-    storage = 1000.0_kind_noahmp * (sigma * GaussianPDF(0.0_kind_noahmp, 1.0_kind_noahmp) * &
-              exp(-0.5_kind_noahmp * u * u) / GaussianPDF(0.0_kind_noahmp, 1.0_kind_noahmp) + &
-              (-WTD) * GaussianCDF(-WTD, sigma))
-
-    ! Simplify: sigma * phi_std(u) = sigma * exp(-u^2/2)/sqrt(2*pi)
-    !           (-WTD) * Phi_std(u)  = (-WTD) * 0.5*erfc(-u/sqrt(2))
+    ! Partial expectation: E[max(-WTD - z_s, 0)] = sigma*phi_std(u) + (-WTD)*Phi_std(u)
+    ! where phi_std is standard normal pdf, Phi_std is standard normal CDF
+    ! sigma * phi_std(u) = sigma * exp(-u^2/2) / sqrt(2*pi)
+    ! (-WTD) * Phi_std(u) = (-WTD) * 0.5 * erfc(-u / sqrt(2))
     storage = 1000.0_kind_noahmp * ( &
               sigma * exp(-0.5_kind_noahmp * u * u) / sqrt2pi + &
               (-WTD) * 0.5_kind_noahmp * erfc(-u / sqrt2) )

@@ -113,10 +113,14 @@ contains
           SoilWaterGrad(LoopInd)    = 2.0 * (SoilMoistureTmp(LoopInd)-SoilMoistureTmp(LoopInd+1)) / DepthSnowSoilTmp
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
-          ! For peatlands: suppress Richards when nearly all flux goes to surface water
+          ! For peatlands: scale ET sinks by f_soil (soil partition fraction);
+          ! InfilRateSfc is already partitioned externally in SoilWaterMainMod.
           if ( OptPeatlandPhysics == 1 ) then
              if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
+             else
+                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
+                                       InfilRateSfc + f_soil * TranspWatLossSoilMean(LoopInd) + f_soil * EvapSoilSfcLiqMean
              endif
           endif
        else if ( LoopInd < NumSoilLayer ) then
@@ -127,10 +131,16 @@ contains
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
                                       TranspWatLossSoilMean(LoopInd)
-          ! For peatlands: suppress Richards when nearly all flux goes to surface water
+          ! For peatlands: scale ET sink by f_soil (soil partition fraction)
           if ( OptPeatlandPhysics == 1 ) then
              if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
+             else
+                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd) * SoilWaterGrad(LoopInd) &
+                                     + SoilWatConductivity(LoopInd) &
+                                     - SoilWatDiffusivity(LoopInd-1) * SoilWaterGrad(LoopInd-1) &
+                                     - SoilWatConductivity(LoopInd-1) &
+                                     + f_soil * TranspWatLossSoilMean(LoopInd)
              endif
           endif
        else
@@ -163,10 +173,14 @@ contains
           endif
           WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
                                  TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-          ! For peatlands: suppress Richards when nearly all flux goes to surface water
+          ! For peatlands: scale ET sink by f_soil (soil partition fraction)
           if ( OptPeatlandPhysics == 1 ) then
              if (f_soil < 1.0e-6) then
                 WaterExcess(LoopInd) = 0.0
+             else
+                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1) * SoilWaterGrad(LoopInd-1)) &
+                                     - SoilWatConductivity(LoopInd-1) &
+                                     + f_soil * TranspWatLossSoilMean(LoopInd) + DrainSoilBot
              endif
           endif
        endif

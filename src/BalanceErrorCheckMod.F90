@@ -129,7 +129,7 @@ contains
        SfcWaterTotChgAcc = SfcWaterTotChgAcc + (WaterStorageTotEnd - WaterStorageTotBeg)  ! snow, canopy, and soil water change
        if ( OptPeatlandPhysics == 1 ) then
            SfcWaterTotChgAcc = SfcWaterTotChgAcc + FSW_change
-           write(*,*) "Checking Surface water storage: FSW_change"
+           ! write(*,*) "Checking Surface water storage: FSW_change"
        endif
        PrecipTotAcc      = PrecipTotAcc      + PrecipTotRefHeight * MainTimeStep          ! accumulated precip 
        EvapCanopyNetAcc  = EvapCanopyNetAcc  + EvapCanopyNet      * MainTimeStep          ! accumulated canopy evapo
