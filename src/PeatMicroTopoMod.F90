@@ -43,19 +43,19 @@ module PeatMicroTopoMod
   real(kind=kind_noahmp), parameter :: pi_noahmp   = 3.14159265358979323846_kind_noahmp
 
   ! ------ Gauss-Legendre quadrature ------
-  ! Standard 10-point rule for functions with smooth integrands
-  ! (surface water, specific yield, soil thickness, etc.)
-  integer, parameter :: n_gl = 10
+  ! Standard 40-point rule for functions with smooth integrands
+  ! (surface water, specific yield, soil thickness, FindWaterTable, etc.)
+  integer, parameter :: n_gl = 40
   real(kind=kind_noahmp), dimension(n_gl) :: gl_nodes, gl_weights
 
-  ! Lightweight 5-point rule for equilibrium SM integrals
-  ! (used in EquilibriumSMMicroTopo where the integrand is smooth)
-  integer, parameter :: n_gl_lite = 5
+  ! 20-point rule for equilibrium SM integrals
+  ! (used in EquilibriumSMMicroTopo; resolves the Campbell air-entry kink)
+  integer, parameter :: n_gl_lite = 20
   real(kind=kind_noahmp), dimension(n_gl_lite) :: gl_nodes_lite, gl_weights_lite
 
-  ! Fine 100-point rule for the microtopo zone in SoilWaterStorageMicroTopo
+  ! Fine 400-point rule for the microtopo zone in SoilWaterStorageMicroTopo
   ! where the Campbell air-entry kink demands high resolution
-  integer, parameter :: n_gl_fine = 100
+  integer, parameter :: n_gl_fine = 400
   real(kind=kind_noahmp), dimension(n_gl_fine) :: gl_nodes_fine, gl_weights_fine
 
   ! Precomputed quadrature coefficients for microtopo-zone integrals
@@ -70,51 +70,18 @@ contains
 
   !========================================================================
   ! Initialize Gauss-Legendre nodes and weights
-  ! - 10-point table: hardcoded for general use
-  ! - 5-point table: hardcoded for equilibrium SM integrals
-  ! - 100-point table: computed via Newton iteration on Legendre polynomials
+  ! All rules computed via Newton iteration on Legendre polynomials.
+  ! - 40-point rule: general use (Sy, surface water, FindWaterTable, etc.)
+  ! - 20-point rule: equilibrium SM integrals (EquilibriumSMMicroTopo)
+  ! - 400-point rule: fine diagnostic integrals (SoilWaterStorageMicroTopo)
   !========================================================================
   subroutine InitGaussLegendre()
     implicit none
     integer :: k
 
-    ! 10-point Gauss-Legendre nodes (on [-1,1]) and weights
-    gl_nodes( 1) = -0.9739065285171717_kind_noahmp
-    gl_nodes( 2) = -0.8650633666889845_kind_noahmp
-    gl_nodes( 3) = -0.6794095682990244_kind_noahmp
-    gl_nodes( 4) = -0.4333953941292472_kind_noahmp
-    gl_nodes( 5) = -0.1488743389816312_kind_noahmp
-    gl_nodes( 6) =  0.1488743389816312_kind_noahmp
-    gl_nodes( 7) =  0.4333953941292472_kind_noahmp
-    gl_nodes( 8) =  0.6794095682990244_kind_noahmp
-    gl_nodes( 9) =  0.8650633666889845_kind_noahmp
-    gl_nodes(10) =  0.9739065285171717_kind_noahmp
-
-    gl_weights( 1) = 0.0666713443086881_kind_noahmp
-    gl_weights( 2) = 0.1494513491505806_kind_noahmp
-    gl_weights( 3) = 0.2190863625159820_kind_noahmp
-    gl_weights( 4) = 0.2692667193099963_kind_noahmp
-    gl_weights( 5) = 0.2955242247147529_kind_noahmp
-    gl_weights( 6) = 0.2955242247147529_kind_noahmp
-    gl_weights( 7) = 0.2692667193099963_kind_noahmp
-    gl_weights( 8) = 0.2190863625159820_kind_noahmp
-    gl_weights( 9) = 0.1494513491505806_kind_noahmp
-    gl_weights(10) = 0.0666713443086881_kind_noahmp
-
-    ! 5-point Gauss-Legendre for lightweight equilibrium integrals
-    gl_nodes_lite(1) = -0.9061798459386640_kind_noahmp
-    gl_nodes_lite(2) = -0.5384693101056831_kind_noahmp
-    gl_nodes_lite(3) =  0.0_kind_noahmp
-    gl_nodes_lite(4) =  0.5384693101056831_kind_noahmp
-    gl_nodes_lite(5) =  0.9061798459386640_kind_noahmp
-
-    gl_weights_lite(1) = 0.2369268850561891_kind_noahmp
-    gl_weights_lite(2) = 0.4786286704993665_kind_noahmp
-    gl_weights_lite(3) = 0.5688888888888889_kind_noahmp
-    gl_weights_lite(4) = 0.4786286704993665_kind_noahmp
-    gl_weights_lite(5) = 0.2369268850561891_kind_noahmp
-
-    ! Compute 100-point Gauss-Legendre via Newton iteration
+    ! Compute all quadrature rules via Newton iteration
+    call ComputeGaussLegendre(n_gl,      gl_nodes,      gl_weights)
+    call ComputeGaussLegendre(n_gl_lite, gl_nodes_lite, gl_weights_lite)
     call ComputeGaussLegendre(n_gl_fine, gl_nodes_fine, gl_weights_fine)
 
     ! Precompute weighted soil fractions at microtopo-zone GL nodes
