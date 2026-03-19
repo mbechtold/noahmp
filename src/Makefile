@@ -185,8 +185,7 @@ IrrigationMicroMod.o:                 ../utility/Machine.o NoahmpVarType.o Const
 MatrixSolverTriDiagonalMod.o:         ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o
 RunoffSubSurfaceDrainageMod.o:        ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o
 PeatMicroTopoMod.o:                   ../utility/Machine.o ConstantDefineMod.o
-RunoffSubSurfacePeatlandMod.o:        ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o \
-                                      WaterTableEquilibriumPeatMod.o
+RunoffSubSurfacePeatlandMod.o:        ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o
 MicroTopoCorrectionMod.o:             ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o \
                                       PeatMicroTopoMod.o
 RunoffSubSurfaceEquiWaterTableMod.o:  ../utility/Machine.o NoahmpVarType.o ConstantDefineMod.o \
