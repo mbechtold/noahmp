@@ -66,17 +66,11 @@ contains
     ! Peatland-specific local variables
     real(kind=kind_noahmp)            :: W_surface_begin              ! surface water storage at timestep start [mm]
     real(kind=kind_noahmp)            :: W_surface_end                ! surface water storage at timestep end [mm]
-    real(kind=kind_noahmp)            :: D_soil_equil                 ! equilibrium deficit at target WTD [m]
-    real(kind=kind_noahmp)            :: WTD_soil                     ! WTD diagnosed from soil layers [m]
-    real(kind=kind_noahmp)            :: WTD_surface                  ! WTD diagnosed from surface water [m]
     real(kind=kind_noahmp)            :: WTD_target                   ! equilibrated target WTD [m]
     real(kind=kind_noahmp)            :: W_total                      ! total storage (soil+surface) for conservation [mm]
     real(kind=kind_noahmp)            :: W_soil_actual                ! actual soil water [mm]
-    real(kind=kind_noahmp)            :: W_soil_equil                 ! equilibrium soil water at WTD_target [mm]
-
+    real(kind=kind_noahmp)            :: water_transfer               ! water moved between soil and surface [mm]
     real(kind=kind_noahmp)            :: thetas, ae, bb               ! peat soil params
-    real(kind=kind_noahmp)            :: zwt_lo, zwt_hi, zwt_mid      ! bisection variables
-    real(kind=kind_noahmp)            :: func_mid                     ! bisection function value
     real(kind=kind_noahmp)            :: InfilRateSfcTotal             ! total infiltration before partitioning [m/s]
     integer                           :: IterEquil                     ! equilibration iteration counter
 
@@ -257,7 +251,7 @@ contains
           RunoffSurfaceAcc = RunoffSurfaceAcc + RunoffSurface
        enddo
 
-       ! --- Step 8: Post-Richards equilibration ---
+       ! --- Step 8: Post-Richards equilibration (budget-constrained) ---
        ! Peat soil parameters
        thetas = SoilMoistureSat(1)
        ae     = abs(SoilMatPotentialSat(1))
@@ -270,9 +264,6 @@ contains
        enddo
 
        ! Surface water budget: only infiltration is partitioned, NOT ET.
-       ! Richards handles the full ET from soil; the equilibration step then
-       ! transfers surface water into soil to maintain WTD consistency.
-       ! This ensures soil can dry out even when WTD is shallow (f_soil ≈ 0).
        W_surface_end = W_surface_begin + &
                         (1.0_kind_noahmp - f_soil) * InfilRateSfcTotal * SoilTimeStep * 1000.0_kind_noahmp
        W_surface_end = max(0.0_kind_noahmp, W_surface_end)
@@ -280,82 +271,52 @@ contains
        ! Total storage for conservation
        W_total = W_soil_actual + W_surface_end
 
-       ! Equilibrate: find WTD_target that is consistent with both domains
-       ! Bisect for WTD_target where soil_storage(WTD) + surface_storage(WTD) = W_total
+       ! Budget-constrained equilibration: move layers 2+ toward equilibrium
+       ! by explicitly transferring water between soil and surface water.
+       ! Layer 1 is kept from Richards (preserves ET dynamics).
+       ! Water is never created: transfers are limited by available surface water.
        do IterEquil = 1, 3
-          ! Diagnose WTD_soil from soil layers
+          ! Diagnose WTD from current soil moisture
           call WaterTableEquilibriumPeat(noahmp)
-          WTD_soil = max(WaterTableDepth, WaterTableDepthMinPeat)
+          WTD_target = max(WaterTableDepth, WaterTableDepthMinPeat)
 
-          ! Diagnose WTD_surface from surface water via inverse of SurfaceWaterStorage_mm
-          ! Bisect: find WTD where SurfaceWaterStorage_mm(WTD) = W_surface_end
-          if (W_surface_end <= 0.0_kind_noahmp) then
-             WTD_surface = 1.0_kind_noahmp   ! no surface water → deep WTD
-          else
-             zwt_lo = WaterTableDepthMinPeat
-             zwt_hi = 1.0_kind_noahmp
-             do LoopInd1 = 1, 60
-                zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
-                func_mid = SurfaceWaterStorage_mm(zwt_mid, sigma_z) - W_surface_end
-                if (abs(func_mid) < 0.001_kind_noahmp .or. (zwt_hi - zwt_lo) < 1.0e-4_kind_noahmp) exit
-                if (func_mid > 0.0_kind_noahmp) then
-                   zwt_lo = zwt_mid   ! storage too high → deeper WTD
-                else
-                   zwt_hi = zwt_mid   ! storage too low → shallower WTD
-                endif
-             enddo
-             WTD_surface = zwt_mid
-          endif
-
-          ! If soil and surface WTDs already agree, done
-          if (abs(WTD_soil - WTD_surface) < 1.0e-4_kind_noahmp) exit
-
-          ! Find WTD_target conserving total storage
-          ! f(WTD) = soil_storage(WTD) + SurfaceWaterStorage(WTD) - W_total = 0
-          ! soil_storage(WTD) = thetas*total_depth*1000 - deficit(WTD)*1000
-          zwt_lo = WaterTableDepthMinPeat
-          zwt_hi = 3.0_kind_noahmp * (-DepthSoilLayer(NumSoilLayer))
-          do LoopInd1 = 1, 60
-             zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
-             ! Soil storage at this WTD
-             D_soil_equil = MicroTopoStorageDeficitExtended(zwt_mid, NumSoilLayer, DepthSoilLayer, &
-                                                             thetas, ae, bb, sigma_z)
-             W_soil_equil = thetas * (-DepthSoilLayer(NumSoilLayer)) * 1000.0_kind_noahmp - &
-                            D_soil_equil * 1000.0_kind_noahmp
-             func_mid = W_soil_equil + SurfaceWaterStorage_mm(zwt_mid, sigma_z) - W_total
-             if (abs(func_mid) < 0.01_kind_noahmp .or. (zwt_hi - zwt_lo) < 1.0e-4_kind_noahmp) exit
-             if (func_mid > 0.0_kind_noahmp) then
-                zwt_lo = zwt_mid   ! too much total storage → deeper WTD
-             else
-                zwt_hi = zwt_mid   ! too little → shallower WTD
-             endif
-          enddo
-          WTD_target = max(zwt_mid, WaterTableDepthMinPeat)
-
-          ! Transfer water between domains (partial equilibrium).
-          ! Set layers 2+ to their multi-column equilibrium at WTD_target.
-          ! Layer 1 is kept from Richards (preserves ET dynamics).
-          ! Layers where WT dropped below their bottom are left free.
-          ! Surface water absorbs the residual via W_total conservation.
+          ! Compute equilibrium profile at this WTD
           call MicroTopoEquilibriumProfile(WTD_target, NumSoilLayer, DepthSoilLayer, &
                                             thetas, ae, bb, sigma_z, theta_equil)
+
+          ! Pass A: Release water from layers where equilibrium is drier.
+          ! This frees water from over-saturated deep layers into surface pool.
           do LoopInd1 = 2, NumSoilLayer
              if (WTD_target < (-DepthSoilLayer(LoopInd1))) then
-                ! WT above layer bottom: set to ensemble equilibrium
-                SoilLiqWater(LoopInd1) = theta_equil(LoopInd1)
+                if (theta_equil(LoopInd1) < SoilLiqWater(LoopInd1)) then
+                   water_transfer = (SoilLiqWater(LoopInd1) - theta_equil(LoopInd1)) * &
+                                    ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
+                   SoilLiqWater(LoopInd1) = theta_equil(LoopInd1)
+                   W_surface_end = W_surface_end + water_transfer
+                endif
              endif
+          enddo
+
+          ! Pass B: Supply water to layers where equilibrium is wetter.
+          ! Only draw from available surface water — never creates water.
+          do LoopInd1 = 2, NumSoilLayer
+             if (WTD_target < (-DepthSoilLayer(LoopInd1))) then
+                if (theta_equil(LoopInd1) > SoilLiqWater(LoopInd1) .and. W_surface_end > 0.0_kind_noahmp) then
+                   water_transfer = (theta_equil(LoopInd1) - SoilLiqWater(LoopInd1)) * &
+                                    ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
+                   water_transfer = min(water_transfer, W_surface_end)
+                   SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) + &
+                                            water_transfer / (ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp)
+                   W_surface_end = W_surface_end - water_transfer
+                endif
+             endif
+          enddo
+
+          ! Clamp to valid range
+          do LoopInd1 = 2, NumSoilLayer
              SoilLiqWater(LoopInd1) = max(0.0_kind_noahmp, &
                                       min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
           enddo
-
-          ! Update surface water
-          W_surface_end = W_total - 0.0_kind_noahmp
-          W_soil_actual = 0.0_kind_noahmp
-          do LoopInd1 = 1, NumSoilLayer
-             W_soil_actual = W_soil_actual + SoilLiqWater(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
-          enddo
-          W_surface_end = W_total - W_soil_actual
-          W_surface_end = max(0.0_kind_noahmp, W_surface_end)
 
           WaterTableDepth = WTD_target
        enddo ! IterEquil
