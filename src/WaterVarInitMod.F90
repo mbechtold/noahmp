@@ -116,6 +116,12 @@ contains
        allocate( noahmp%water%state%SoilTranspFac(1:NumSoilLayer) )
     if ( .not. allocated(noahmp%water%state%SoilMatPotential) )     &
        allocate( noahmp%water%state%SoilMatPotential(1:NumSoilLayer) )
+    if ( .not. allocated(noahmp%water%state%f_soil_k) )              &
+       allocate( noahmp%water%state%f_soil_k(1:NumSoilLayer) )
+    if ( .not. allocated(noahmp%water%state%InDisequilibrium) )      &
+       allocate( noahmp%water%state%InDisequilibrium(1:NumSoilLayer) )
+    if ( .not. allocated(noahmp%water%state%SoilMoistureDeficit) )   &
+       allocate( noahmp%water%state%SoilMoistureDeficit(1:NumSoilLayer) )
 
     noahmp%water%state%IndexPhaseChange   (:)      = undefined_int
     noahmp%water%state%SoilSupercoolWater (:)      = undefined_real
@@ -137,6 +143,9 @@ contains
     noahmp%water%state%SoilMoistureEqui   (:)      = undefined_real
     noahmp%water%state%SoilTranspFac      (:)      = undefined_real
     noahmp%water%state%SoilMatPotential   (:)      = undefined_real
+    noahmp%water%state%f_soil_k            (:)      = 1.0
+    noahmp%water%state%InDisequilibrium    (:)      = .false.
+    noahmp%water%state%SoilMoistureDeficit (:)      = 0.0
 
     ! water flux variables
     noahmp%water%flux%PrecipTotRefHeight           = undefined_real
@@ -195,8 +204,8 @@ contains
     noahmp%water%flux%EvapIrriSprinkler            = 0.0
     noahmp%water%flux%TileDrain                    = 0.0
     noahmp%water%state%FSW_change                  = 0.0
-    noahmp%water%state%f_soil                      = undefined_real
-    noahmp%water%state%AR1                         = undefined_real
+    noahmp%water%state%f_part                      = undefined_real
+    noahmp%water%state%FloodedFrac                 = undefined_real
 
     if ( .not. allocated(noahmp%water%flux%CompactionSnowAging) )   &
        allocate( noahmp%water%flux%CompactionSnowAging(-NumSnowLayerMax+1:0) )

@@ -9,7 +9,7 @@ module SoilWaterDiffusionRichardsMod
   use NoahmpVarType
   use ConstantDefineMod
   use SoilHydraulicPropertyMod
-
+  use MicroTopoCorrectionMod, only: SoilFractionAtDepth
 
   implicit none
 
@@ -21,6 +21,7 @@ contains
 ! Original Noah-MP subroutine: SRT
 ! Original code: Guo-Yue Niu and Noah-MP team (Niu et al. 2011)
 ! Refactered code: C. He, P. Valayamkunnath, & refactor team (He et al. 2023)
+! Peatland microtopo: Bechtold (2025)
 ! ----------------------------------------------------------------------------------------
 
     implicit none
@@ -37,6 +38,8 @@ contains
     real(kind=kind_noahmp)                            :: DepthSnowSoilTmp            ! temporary snow/soil layer depth [m]
     real(kind=kind_noahmp)                            :: SoilMoistTmpToWT            ! temporary soil moisture between bottom of the soil and water table
     real(kind=kind_noahmp)                            :: SoilMoistBotTmp             ! temporary soil moisture below bottom to calculate flux
+    real(kind=kind_noahmp)                            :: theta_hyd_tmp               ! per-soil-area moisture for peatland hydraulic properties
+    real(kind=kind_noahmp)                            :: f_soil_iface                ! soil fraction at interface for peatland
     real(kind=kind_noahmp), allocatable, dimension(:) :: DepthSnowSoilInv            ! inverse of snow/soil layer depth [1/m]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilThickTmp                ! temporary soil thickness
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilWaterGrad               ! temporary soil moisture vertical gradient
@@ -63,9 +66,10 @@ contains
               SoilMoistureToWT          => noahmp%water%state%SoilMoistureToWT            ,& ! in,  soil moisture between bottom of the soil and the water table
               SoilWatConductivity       => noahmp%water%state%SoilWatConductivity         ,& ! out, soil hydraulic conductivity [m/s]
               SoilWatDiffusivity        => noahmp%water%state%SoilWatDiffusivity          ,& ! out, soil water diffusivity [m2/s]
-              FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout,   surface storage change [mm]
-              f_soil                    => noahmp%water%state%f_soil                      ,& ! inout, fraction of flux in and out of soil [-]
-              AR1                       => noahmp%water%state%AR1                         ,& ! inout, fraction of flux in and out of soil [-]
+              FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout, surface storage change [mm]
+              f_part                    => noahmp%water%state%f_part                      ,& ! inout, soil flux partition fraction
+              FloodedFrac               => noahmp%water%state%FloodedFrac                 ,& ! inout, flooded fraction
+              f_soil_k                  => noahmp%water%state%f_soil_k                    ,& ! in,  per-layer soil fraction
               DrainSoilBot              => noahmp%water%flux%DrainSoilBot                  & ! out, soil bottom drainage [m/s]
              )
 ! ----------------------------------------------------------------------
@@ -103,7 +107,27 @@ contains
           SoilMoistureTmp(LoopInd) = SoilLiqWater(LoopInd)
        enddo
        if ( OptRunoffSubsurface == 5 ) &
-          SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
+          SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)
+    endif
+
+    ! Peatland: recompute hydraulic properties at per-soil-area moisture
+    ! and scale D, K by f_soil at layer interfaces
+    if ( OptPeatlandPhysics == 1 ) then
+       do LoopInd = 1, NumSoilLayer
+          theta_hyd_tmp = SoilMoistureTmp(LoopInd) / max(f_soil_k(LoopInd), 0.01_kind_noahmp)
+          theta_hyd_tmp = min(theta_hyd_tmp, noahmp%water%param%SoilMoistureSat(LoopInd))
+          if ( OptSoilPermeabilityFrozen == 1 ) then
+             call SoilDiffusivityConductivityOpt1(noahmp,SoilWatDiffusivity(LoopInd),SoilWatConductivity(LoopInd),&
+                                                  theta_hyd_tmp,SoilImpervFrac(LoopInd),LoopInd)
+          else
+             call SoilDiffusivityConductivityOpt2(noahmp,SoilWatDiffusivity(LoopInd),SoilWatConductivity(LoopInd),&
+                                                  theta_hyd_tmp,SoilIceMax,LoopInd)
+          endif
+          ! Scale by f_soil at the interface (bottom of layer k)
+          f_soil_iface = SoilFractionAtDepth(abs(DepthSoilLayer(LoopInd)))
+          SoilWatDiffusivity(LoopInd)  = SoilWatDiffusivity(LoopInd) * f_soil_iface
+          SoilWatConductivity(LoopInd) = SoilWatConductivity(LoopInd) * f_soil_iface
+       enddo
     endif
 
     ! compute gradient and flux of soil water diffusion terms
@@ -115,14 +139,11 @@ contains
           SoilWaterGrad(LoopInd)    = 2.0 * (SoilMoistureTmp(LoopInd)-SoilMoistureTmp(LoopInd+1)) / DepthSnowSoilTmp
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
-          !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                            InfilRateSfc + f_soil*TranspWatLossSoilMean(LoopInd) + f_soil*EvapSoilSfcLiqMean
-             endif
+             ! D, K already scaled by f_soil_interface; source terms scaled by f_soil_k
+             WaterExcess(LoopInd)   = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
+                                      InfilRateSfc + f_soil_k(LoopInd)*TranspWatLossSoilMean(LoopInd) + &
+                                      f_soil_k(LoopInd)*EvapSoilSfcLiqMean
           endif
        else if ( LoopInd < NumSoilLayer ) then
           SoilThickTmp(LoopInd)     = (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd))
@@ -132,21 +153,13 @@ contains
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
                                       TranspWatLossSoilMean(LoopInd)
-          !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
+             WaterExcess(LoopInd)   = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
-                                      f_soil*TranspWatLossSoilMean(LoopInd)
-             endif
+                                      f_soil_k(LoopInd)*TranspWatLossSoilMean(LoopInd)
           endif
        else
           SoilThickTmp(LoopInd) = (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd))
-          ! MB: For peatlands we don't want to lose water through the bottom ... instead it should raise the water level
-          ! using the equilibrium approach that is also used in RunoffSubsurfaceOption 2
-          !if ( (OptRunoffSubsurface == 1) .or. (OptRunoffSubsurface == 2) .or. (OptRunoffSubsurface == 9)) then
           if ( (OptRunoffSubsurface == 1) .or. (OptRunoffSubsurface == 2) .or. (OptPeatlandPhysics == 1)) then
              DrainSoilBot = 0.0
           endif
@@ -157,11 +170,9 @@ contains
           if ( OptRunoffSubsurface == 4 ) then
              DrainSoilBot = (1.0 - SoilImpervFracMax) * SoilWatConductivity(LoopInd)
           endif
-          if ( OptRunoffSubsurface == 5 ) then   ! gmm new m-m&f water table dynamics formulation
+          if ( OptRunoffSubsurface == 5 ) then
              DepthSnowSoilTmp  = 2.0 * SoilThickTmp(LoopInd)
              if ( WaterTableDepth < (DepthSoilLayer(NumSoilLayer)-SoilThickTmp(NumSoilLayer)) ) then
-                ! gmm interpolate from below, midway to the water table, 
-                ! to the middle of the auxiliary layer below the soil bottom
                 SoilMoistBotTmp = SoilMoistureTmp(LoopInd) - (SoilMoistureTmp(LoopInd)-SoilMoistTmpToWT) * &
                                   SoilThickTmp(LoopInd)*2.0 / (SoilThickTmp(LoopInd)+DepthSoilLayer(LoopInd)-WaterTableDepth)
              else
@@ -172,14 +183,9 @@ contains
           endif
           WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
                                  TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-          !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 0.000001) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
-                                 f_soil*TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-             endif
+             WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
+                                    f_soil_k(LoopInd)*TranspWatLossSoilMean(LoopInd) + DrainSoilBot
           endif
        endif
     enddo

@@ -5,8 +5,6 @@ module RunoffSubSurfacePeatlandMod
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use WaterTableEquilibriumPeatMod, only : WaterTableEquilibriumPeat
-
   implicit none
 
 contains
@@ -32,16 +30,9 @@ contains
     associate(                                                           &
               SoilImpervFracMax => noahmp%water%state%SoilImpervFracMax ,& ! in,    maximum soil imperviousness fraction
               WaterTableDepth   => noahmp%water%state%WaterTableDepth   ,& ! out,   water table depth [m]
-              FSW_change         => noahmp%water%state%FSW_change        ,& ! inout, 
               RunoffSubsurface  => noahmp%water%flux%RunoffSubsurface    & ! out,   subsurface runoff [mm/s] 
              )
 ! ----------------------------------------------------------------------
-
-    ! Compute equilibrium water table depth
-    ! For very shallow water table detph, use PEATCLSM approximation outside of this routine
-    if (WaterTableDepth>0.1) then
-       call WaterTableEquilibriumPeat(noahmp)
-    endif
 
     ! ------------------------------------------
     ! Option 9: Ivanov-based Peatland Runoff Scheme (Chakraborty & Bechtold, 2025)
@@ -62,10 +53,8 @@ contains
     ! Compute subsurface runoff using Peatland-specific equation
     RunoffSubsurface = (1.0_dp - SoilImpervFracMax) * BFLOW
     
-    RunoffSubsurface = min(0.0002,RunoffSubSurface)
-    
-    ! Set FSW_change to zero for following calculations in SoilWaterMain and WaterBalanceError Check
-    FSW_change = 0.0
+    RunoffSubsurface = min(0.0002_dp,RunoffSubSurface)
+    RunoffSubsurface = max(0.0_dp, RunoffSubsurface)
 
     end associate
 

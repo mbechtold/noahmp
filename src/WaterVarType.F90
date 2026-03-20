@@ -132,8 +132,8 @@ module WaterVarType
     real(kind=kind_noahmp) :: SoilWaterRootZone          ! root zone soil water
     real(kind=kind_noahmp) :: SoilWaterStress            ! soil water stress
     real(kind=kind_noahmp) :: FSW_change                 ! Free surface water storage change [mm] 
-    real(kind=kind_noahmp) :: f_soil                     ! 
-    real(kind=kind_noahmp) :: AR1                        ! 
+    real(kind=kind_noahmp) :: f_part                     ! soil flux partition fraction from Sy-weighted formula
+    real(kind=kind_noahmp) :: FloodedFrac                ! flooded fraction of landscape from Gaussian microtopo
     real(kind=kind_noahmp) :: WaterStorageTotBeg         ! total water storage [mm] at the begining before NoahMP process
     real(kind=kind_noahmp) :: WaterBalanceError          ! water balance error [mm]
     real(kind=kind_noahmp) :: WaterStorageTotEnd         ! total water storage [mm] at the end of NoahMP process
@@ -158,6 +158,9 @@ module WaterVarType
     real(kind=kind_noahmp), allocatable, dimension(:) :: SnowLiqWaterVol       ! partial volume of snow liquid water [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilSupercoolWater    ! supercooled water in soil [kg/m2]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMatPotential      ! soil matric potential [m]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: f_soil_k              ! per-layer soil fraction from Gaussian microtopo
+    logical               , allocatable, dimension(:) :: InDisequilibrium      ! per-layer flag: layer is in Richards disequilibrium regime
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureDeficit   ! per-layer deficit delta_k = theta_eq - theta [m3/m3]
 
   end type state_type
 
