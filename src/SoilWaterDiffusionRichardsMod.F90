@@ -113,16 +113,10 @@ contains
           SoilWaterGrad(LoopInd)    = 2.0 * (SoilMoistureTmp(LoopInd)-SoilMoistureTmp(LoopInd+1)) / DepthSnowSoilTmp
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
-          ! For peatlands: scale ET sinks by f_soil (soil partition fraction);
-          ! InfilRateSfc is already partitioned externally in SoilWaterMainMod.
-          if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 1.0e-6) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                       InfilRateSfc + f_soil * TranspWatLossSoilMean(LoopInd) + f_soil * EvapSoilSfcLiqMean
-             endif
-          endif
+          ! For peatlands: InfilRateSfc is already partitioned externally.
+          ! ET sinks are NOT partitioned — Richards always handles the full ET
+          ! so the soil can dry out. The equilibration step transfers water
+          ! between soil and surface to maintain WTD consistency.
        else if ( LoopInd < NumSoilLayer ) then
           SoilThickTmp(LoopInd)     = (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd))
           DepthSnowSoilTmp          = (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd+1))
@@ -131,18 +125,7 @@ contains
           WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
                                       TranspWatLossSoilMean(LoopInd)
-          ! For peatlands: scale ET sink by f_soil (soil partition fraction)
-          if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 1.0e-6) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd) * SoilWaterGrad(LoopInd) &
-                                     + SoilWatConductivity(LoopInd) &
-                                     - SoilWatDiffusivity(LoopInd-1) * SoilWaterGrad(LoopInd-1) &
-                                     - SoilWatConductivity(LoopInd-1) &
-                                     + f_soil * TranspWatLossSoilMean(LoopInd)
-             endif
-          endif
+          ! For peatlands: no ET scaling — Richards always handles full ET.
        else
           SoilThickTmp(LoopInd) = (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd))
           ! MB: For peatlands we don't want to lose water through the bottom ... instead it should raise the water level
@@ -173,16 +156,7 @@ contains
           endif
           WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
                                  TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-          ! For peatlands: scale ET sink by f_soil (soil partition fraction)
-          if ( OptPeatlandPhysics == 1 ) then
-             if (f_soil < 1.0e-6) then
-                WaterExcess(LoopInd) = 0.0
-             else
-                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1) * SoilWaterGrad(LoopInd-1)) &
-                                     - SoilWatConductivity(LoopInd-1) &
-                                     + f_soil * TranspWatLossSoilMean(LoopInd) + DrainSoilBot
-             endif
-          endif
+          ! For peatlands: no ET scaling — Richards always handles full ET.
        endif
     enddo
 

@@ -267,12 +267,12 @@ contains
           W_soil_actual = W_soil_actual + SoilLiqWater(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
        enddo
 
-       ! Surface water budget: add infiltration to surface, subtract ET and runoff shares
-       ! W_surface after fluxes applied
+       ! Surface water budget: only infiltration is partitioned, NOT ET.
+       ! Richards handles the full ET from soil; the equilibration step then
+       ! transfers surface water into soil to maintain WTD consistency.
+       ! This ensures soil can dry out even when WTD is shallow (f_soil ≈ 0).
        W_surface_end = W_surface_begin + &
-                        (1.0_kind_noahmp - f_soil) * InfilRateSfcTotal * SoilTimeStep * 1000.0_kind_noahmp - &
-                        (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep - &
-                        (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep
+                        (1.0_kind_noahmp - f_soil) * InfilRateSfcTotal * SoilTimeStep * 1000.0_kind_noahmp
        W_surface_end = max(0.0_kind_noahmp, W_surface_end)
 
        ! Total storage for conservation
