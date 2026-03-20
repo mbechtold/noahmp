@@ -69,8 +69,12 @@ contains
     real(kind=kind_noahmp)            :: WTD_target                   ! equilibrated target WTD [m]
     real(kind=kind_noahmp)            :: W_total                      ! total storage (soil+surface) for conservation [mm]
     real(kind=kind_noahmp)            :: W_soil_actual                ! actual soil water [mm]
+    real(kind=kind_noahmp)            :: W_soil_equil                 ! equilibrium soil water at WTD [mm]
+    real(kind=kind_noahmp)            :: D_soil_equil                 ! equilibrium deficit at WTD [m]
     real(kind=kind_noahmp)            :: water_transfer               ! water moved between soil and surface [mm]
     real(kind=kind_noahmp)            :: thetas, ae, bb               ! peat soil params
+    real(kind=kind_noahmp)            :: zwt_lo, zwt_hi, zwt_mid      ! bisection variables
+    real(kind=kind_noahmp)            :: func_mid                     ! bisection function value
     real(kind=kind_noahmp)            :: InfilRateSfcTotal             ! total infiltration before partitioning [m/s]
     integer                           :: IterEquil                     ! equilibration iteration counter
 
@@ -274,11 +278,28 @@ contains
        ! Budget-constrained equilibration: move layers 2+ toward equilibrium
        ! by explicitly transferring water between soil and surface water.
        ! Layer 1 is kept from Richards (preserves ET dynamics).
-       ! Water is never created: transfers are limited by available surface water.
+       ! WTD_target from total-storage bisection (not WaterTableEquilibriumPeat,
+       ! which would be biased by layer 1 ET deficit).
        do IterEquil = 1, 3
-          ! Diagnose WTD from current soil moisture
-          call WaterTableEquilibriumPeat(noahmp)
-          WTD_target = max(WaterTableDepth, WaterTableDepthMinPeat)
+          ! Find WTD_target conserving total storage:
+          ! f(WTD) = soil_storage_equil(WTD) + SurfaceWaterStorage(WTD) - W_total = 0
+          zwt_lo = WaterTableDepthMinPeat
+          zwt_hi = 3.0_kind_noahmp * (-DepthSoilLayer(NumSoilLayer))
+          do LoopInd1 = 1, 60
+             zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
+             D_soil_equil = MicroTopoStorageDeficitExtended(zwt_mid, NumSoilLayer, DepthSoilLayer, &
+                                                             thetas, ae, bb, sigma_z)
+             W_soil_equil = thetas * (-DepthSoilLayer(NumSoilLayer)) * 1000.0_kind_noahmp - &
+                            D_soil_equil * 1000.0_kind_noahmp
+             func_mid = W_soil_equil + SurfaceWaterStorage_mm(zwt_mid, sigma_z) - W_total
+             if (abs(func_mid) < 0.01_kind_noahmp .or. (zwt_hi - zwt_lo) < 1.0e-4_kind_noahmp) exit
+             if (func_mid > 0.0_kind_noahmp) then
+                zwt_lo = zwt_mid
+             else
+                zwt_hi = zwt_mid
+             endif
+          enddo
+          WTD_target = max(zwt_mid, WaterTableDepthMinPeat)
 
           ! Compute equilibrium profile at this WTD
           call MicroTopoEquilibriumProfile(WTD_target, NumSoilLayer, DepthSoilLayer, &
