@@ -174,15 +174,14 @@ contains
   !   With below-model extension for deep WTD
   ! ====================================================================
   function MicroTopoStorageDeficit(WTD, NumSoilLayer, DepthSoilLayer, &
-                                    ThicknessSoilLayer, thetas, ae, bb) result(deficit)
+                                    thetas, ae, bb) result(deficit)
     implicit none
     real(kind=kind_noahmp), intent(in) :: WTD, thetas, ae, bb
     integer, intent(in) :: NumSoilLayer
     real(kind=kind_noahmp), intent(in) :: DepthSoilLayer(NumSoilLayer)
-    real(kind=kind_noahmp), intent(in) :: ThicknessSoilLayer(NumSoilLayer)
     real(kind=kind_noahmp) :: deficit
     integer :: k, j, Nsub_ext
-    real(kind=kind_noahmp) :: d_top, d_bot, theta_eq_k, theta_sat_k
+    real(kind=kind_noahmp) :: d_top, d_bot, dz_k, theta_eq_k, theta_sat_k
     real(kind=kind_noahmp) :: depth_bot, dz_ext, dz_sub, d_mid, theta_ext
 
     deficit = 0.0_kind_noahmp
@@ -194,9 +193,10 @@ contains
           d_top = abs(DepthSoilLayer(k-1))
        endif
        d_bot = abs(DepthSoilLayer(k))
+       dz_k = d_bot - d_top
        theta_eq_k = MicroTopoEquilibriumMoisture(WTD, d_top, d_bot, thetas, ae, bb)
        theta_sat_k = thetas * LayerAverageSoilFraction(d_top, d_bot)
-       deficit = deficit + (theta_sat_k - theta_eq_k) * ThicknessSoilLayer(k)
+       deficit = deficit + (theta_sat_k - theta_eq_k) * dz_k
     enddo
 
     ! Below-model extension for deep WTD (flat soil, f_soil ~ 1.0)
@@ -217,19 +217,18 @@ contains
   ! MicroTopoSpecificYield: Sy = dDeficit/dWTD (central difference)
   ! ====================================================================
   function MicroTopoSpecificYield(WTD, NumSoilLayer, DepthSoilLayer, &
-                                   ThicknessSoilLayer, thetas, ae, bb) result(Sy)
+                                   thetas, ae, bb) result(Sy)
     implicit none
     real(kind=kind_noahmp), intent(in) :: WTD, thetas, ae, bb
     integer, intent(in) :: NumSoilLayer
     real(kind=kind_noahmp), intent(in) :: DepthSoilLayer(NumSoilLayer)
-    real(kind=kind_noahmp), intent(in) :: ThicknessSoilLayer(NumSoilLayer)
     real(kind=kind_noahmp) :: Sy
     real(kind=kind_noahmp), parameter :: delta = 0.001_kind_noahmp
 
     Sy = (MicroTopoStorageDeficit(WTD + delta, NumSoilLayer, DepthSoilLayer, &
-                                   ThicknessSoilLayer, thetas, ae, bb) - &
+                                   thetas, ae, bb) - &
           MicroTopoStorageDeficit(WTD - delta, NumSoilLayer, DepthSoilLayer, &
-                                   ThicknessSoilLayer, thetas, ae, bb)) &
+                                   thetas, ae, bb)) &
          / (2.0_kind_noahmp * delta)
     Sy = max(0.001_kind_noahmp, Sy)
   end function MicroTopoSpecificYield
@@ -248,7 +247,6 @@ contains
     associate(                                                                             &
               NumSoilLayer           => noahmp%config%domain%NumSoilLayer              ,&
               DepthSoilLayer         => noahmp%config%domain%DepthSoilLayer            ,&
-              ThicknessSnowSoilLayer => noahmp%config%domain%ThicknessSnowSoilLayer    ,&
               SoilMoistureSat        => noahmp%water%param%SoilMoistureSat             ,&
               SoilMatPotentialSat    => noahmp%water%param%SoilMatPotentialSat         ,&
               SoilExpCoeffB          => noahmp%water%param%SoilExpCoeffB               ,&
@@ -272,8 +270,7 @@ contains
     enddo
 
     Sy_soil = MicroTopoSpecificYield(WaterTableDepth, NumSoilLayer, DepthSoilLayer, &
-                  ThicknessSnowSoilLayer, SoilMoistureSat(1), &
-                  abs(SoilMatPotentialSat(1)), SoilExpCoeffB(1))
+                  SoilMoistureSat(1), abs(SoilMatPotentialSat(1)), SoilExpCoeffB(1))
 
     if (ff > (1.0_kind_noahmp - 1.0e-6_kind_noahmp)) then
        f_part = 0.0_kind_noahmp

@@ -279,7 +279,7 @@ contains
 
           ! Specific yield at current WTD
           Sy_local = MicroTopoSpecificYield(WaterTableDepth, NumSoilLayer, &
-                     DepthSoilLayer, ThicknessSnowSoilLayer, thetas_loc, ae_loc, bb_loc)
+                     DepthSoilLayer, thetas_loc, ae_loc, bb_loc)
 
           ! Update WTD: soil gains water -> WTD decreases (water table rises)
           WaterTableDepth = WaterTableDepth - Q_net_soil * SoilTimeStep / Sy_local
@@ -308,8 +308,7 @@ contains
           ! =============================================================
           ! Compute deficits and set up 1D profile for Richards
           do LoopInd1 = 1, NumSoilLayer
-             SoilMoistureDeficit(LoopInd1) = max(0.0_kind_noahmp, &
-                                             theta_eq_micro(LoopInd1) - SoilLiqWater(LoopInd1))
+             SoilMoistureDeficit(LoopInd1) = theta_eq_micro(LoopInd1) - SoilLiqWater(LoopInd1)
              ! 1D profile: flat-column equilibrium minus deficit
              SoilLiqWater(LoopInd1) = theta_eq_1D(LoopInd1) - SoilMoistureDeficit(LoopInd1)
              SoilLiqWater(LoopInd1) = max(1.0e-4_kind_noahmp, &
@@ -360,7 +359,6 @@ contains
           do LoopInd1 = 1, NumSoilLayer
              if (InDisequilibrium(LoopInd1)) then
                 SoilMoistureDeficit(LoopInd1) = theta_eq_1D(LoopInd1) - SoilLiqWater(LoopInd1)
-                SoilMoistureDeficit(LoopInd1) = max(0.0_kind_noahmp, SoilMoistureDeficit(LoopInd1))
                 SoilLiqWater(LoopInd1) = theta_eq_micro(LoopInd1) - SoilMoistureDeficit(LoopInd1)
              else
                 SoilLiqWater(LoopInd1) = theta_eq_micro(LoopInd1)

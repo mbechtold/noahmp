@@ -28,12 +28,11 @@ contains
     real(kind=kind_noahmp) :: deficit_target, deficit_mid
     real(kind=kind_noahmp) :: zwt_lo, zwt_hi, zwt_mid, zmax
     real(kind=kind_noahmp) :: ae, bb, thetas
-    real(kind=kind_noahmp) :: d_top, d_bot, f_soil_k_local, theta_sat_k
+    real(kind=kind_noahmp) :: d_top, d_bot, dz_k, f_soil_k_local, theta_sat_k
 
     associate(                                                                        &
       NumSoilLayer           => noahmp%config%domain%NumSoilLayer           ,&
       DepthSoilLayer         => noahmp%config%domain%DepthSoilLayer         ,&
-      ThicknessSnowSoilLayer => noahmp%config%domain%ThicknessSnowSoilLayer ,&
       SoilLiqWater           => noahmp%water%state%SoilLiqWater             ,&
       SoilMoistureSat        => noahmp%water%param%SoilMoistureSat          ,&
       SoilMatPotentialSat    => noahmp%water%param%SoilMatPotentialSat      ,&
@@ -55,10 +54,11 @@ contains
           d_top = abs(DepthSoilLayer(k-1))
        endif
        d_bot = abs(DepthSoilLayer(k))
+       dz_k = d_bot - d_top
        f_soil_k_local = LayerAverageSoilFraction(d_top, d_bot)
        theta_sat_k = thetas * f_soil_k_local
        deficit_target = deficit_target + &
-                        (theta_sat_k - SoilLiqWater(k)) * ThicknessSnowSoilLayer(k)
+                        (theta_sat_k - SoilLiqWater(k)) * dz_k
     enddo
 
     if (deficit_target <= 0.0_kind_noahmp) then
@@ -70,14 +70,14 @@ contains
        zwt_hi = max(zmax, 1.0_kind_noahmp)
 
        if (MicroTopoStorageDeficit(zwt_hi, NumSoilLayer, DepthSoilLayer, &
-           ThicknessSnowSoilLayer, thetas, ae, bb) < deficit_target) then
+           thetas, ae, bb) < deficit_target) then
           WaterTableDepth = zwt_hi
        else
           ! Bisection
           do iter = 1, max_iter
              zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
              deficit_mid = MicroTopoStorageDeficit(zwt_mid, NumSoilLayer, &
-                           DepthSoilLayer, ThicknessSnowSoilLayer, thetas, ae, bb)
+                           DepthSoilLayer, thetas, ae, bb)
 
              if (abs(deficit_mid - deficit_target) <= tol_def .or. &
                  (zwt_hi - zwt_lo) <= tol_zwt) then
