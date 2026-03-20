@@ -81,6 +81,10 @@ contains
     real(kind=kind_noahmp)            :: func_lo, func_hi, func_mid   ! bisection function values
     real(kind=kind_noahmp)            :: InfilRateSfcTotal             ! total infiltration before partitioning [m/s]
     integer                           :: IterEquil                     ! equilibration iteration counter
+    real(kind=kind_noahmp)            :: W_reshape_actual              ! actual water in reshape layers [mm]
+    real(kind=kind_noahmp)            :: W_reshape_equil               ! equilibrium water in reshape layers [mm]
+    real(kind=kind_noahmp)            :: dz_reshape                    ! total thickness of reshape layers [m]
+    real(kind=kind_noahmp)            :: delta_reshape                 ! uniform offset for reshape [m3/m3]
 
     real(kind=kind_noahmp), parameter :: WaterTableDepthMinPeat = -0.2449_kind_noahmp
     real(kind=kind_noahmp), parameter :: SoilImpPara = 4.0            ! soil impervious fraction parameter
@@ -333,11 +337,16 @@ contains
           enddo
           WTD_target = max(zwt_mid, WaterTableDepthMinPeat)
 
-          ! Set each layer to its multi-column ensemble equilibrium at WTD_target
-          call MicroTopoEquilibriumProfile(WTD_target, NumSoilLayer, DepthSoilLayer, &
-                                            thetas, ae, bb, sigma_z, theta_equil)
+          ! Transfer water between domains (uniform distribution)
+          D_soil_equil = MicroTopoStorageDeficitExtended(WTD_target, NumSoilLayer, DepthSoilLayer, &
+                                                          thetas, ae, bb, sigma_z)
+          W_soil_equil = thetas * (-DepthSoilLayer(NumSoilLayer)) * 1000.0_kind_noahmp - &
+                         D_soil_equil * 1000.0_kind_noahmp
+          DeltaW_transfer = W_soil_equil - W_soil_actual   ! positive = surface→soil
+
           do LoopInd1 = 1, NumSoilLayer
-             SoilLiqWater(LoopInd1) = theta_equil(LoopInd1)
+             SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) + &
+                DeltaW_transfer / ((-DepthSoilLayer(NumSoilLayer)) * 1000.0_kind_noahmp)
              ! Clamp to valid range
              SoilLiqWater(LoopInd1) = max(0.0_kind_noahmp, &
                                       min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
@@ -374,6 +383,39 @@ contains
        ! --- Step 11: Diagnose final WTD ---
        call WaterTableEquilibriumPeat(noahmp)
        WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
+
+       ! --- Step 11a: Deep-layer shape correction ---
+       ! Reshape layers k>=2 where WT is above their bottom to follow the
+       ! multi-column equilibrium SHAPE, preserving their sub-total water.
+       ! Layer 1 is always left to Richards (preserves ET dynamics).
+       ! Layers where WT dropped below their bottom are also left free.
+       call MicroTopoEquilibriumProfile(WaterTableDepth, NumSoilLayer, DepthSoilLayer, &
+                                         thetas, ae, bb, sigma_z, theta_equil)
+
+       W_reshape_actual = 0.0_kind_noahmp
+       W_reshape_equil  = 0.0_kind_noahmp
+       dz_reshape       = 0.0_kind_noahmp
+       do LoopInd1 = 2, NumSoilLayer
+          ! Reshape only if WT is above the bottom of this layer
+          if (WaterTableDepth < (-DepthSoilLayer(LoopInd1))) then
+             W_reshape_actual = W_reshape_actual + SoilLiqWater(LoopInd1) * &
+                                ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
+             W_reshape_equil  = W_reshape_equil + theta_equil(LoopInd1) * &
+                                ThicknessSnowSoilLayer(LoopInd1) * 1000.0_kind_noahmp
+             dz_reshape = dz_reshape + ThicknessSnowSoilLayer(LoopInd1)
+          endif
+       enddo
+
+       if (dz_reshape > 0.0_kind_noahmp .and. W_reshape_equil > 0.0_kind_noahmp) then
+          delta_reshape = (W_reshape_actual - W_reshape_equil) / (dz_reshape * 1000.0_kind_noahmp)
+          do LoopInd1 = 2, NumSoilLayer
+             if (WaterTableDepth < (-DepthSoilLayer(LoopInd1))) then
+                SoilLiqWater(LoopInd1) = theta_equil(LoopInd1) + delta_reshape
+                SoilLiqWater(LoopInd1) = max(0.0_kind_noahmp, &
+                                         min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
+             endif
+          enddo
+       endif
 
        ! --- Step 12: FSW_change from explicit surface water budget ---
        ! Remove (1-f_soil) share of RunoffSubsurface from surface water
