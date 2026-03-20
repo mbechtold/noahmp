@@ -23,7 +23,8 @@ module SoilWaterMainMod
   use RunoffSubSurfacePeatlandMod,       only : RunoffSubSurfacePeatland
   use MicroTopoCorrectionMod,            only : MicroTopoCorrection, SurfaceWaterStorage_mm, &
                                                  MicroTopoStorageDeficitExtended, &
-                                                 MicroTopoSpecificYield, sigma_z
+                                                 MicroTopoSpecificYield, &
+                                                 MicroTopoEquilibriumProfile, sigma_z
   use PeatlandPhysicsMod,                only : ApplyPeatlandPhysics
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
@@ -88,6 +89,7 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft2     ! left-hand side term
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft3     ! left-hand side term
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqTmp   ! temporary soil liquid water [mm]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: theta_equil  ! equilibrium theta per layer
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -137,6 +139,7 @@ contains
     if (.not. allocated(MatLeft2)  ) allocate(MatLeft2  (1:NumSoilLayer))
     if (.not. allocated(MatLeft3)  ) allocate(MatLeft3  (1:NumSoilLayer))
     if (.not. allocated(SoilLiqTmp)) allocate(SoilLiqTmp(1:NumSoilLayer))
+    if (.not. allocated(theta_equil)) allocate(theta_equil(1:NumSoilLayer))
     MatRight         = 0.0
     MatLeft1         = 0.0
     MatLeft2         = 0.0
@@ -330,20 +333,11 @@ contains
           enddo
           WTD_target = max(zwt_mid, WaterTableDepthMinPeat)
 
-          ! Transfer water between domains
-          D_soil_equil = MicroTopoStorageDeficitExtended(WTD_target, NumSoilLayer, DepthSoilLayer, &
-                                                          thetas, ae, bb, sigma_z)
-          W_soil_equil = thetas * (-DepthSoilLayer(NumSoilLayer)) * 1000.0_kind_noahmp - &
-                         D_soil_equil * 1000.0_kind_noahmp
-          DeltaW_transfer = W_soil_equil - W_soil_actual   ! positive = surface→soil
-
-          ! Distribute transfer across layers proportional to thickness
-          ! (simplified: uniform distribution weighted by layer thickness)
+          ! Set each layer to its multi-column ensemble equilibrium at WTD_target
+          call MicroTopoEquilibriumProfile(WTD_target, NumSoilLayer, DepthSoilLayer, &
+                                            thetas, ae, bb, sigma_z, theta_equil)
           do LoopInd1 = 1, NumSoilLayer
-             SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) + &
-                (DeltaW_transfer / 1000.0_kind_noahmp) * &
-                (ThicknessSnowSoilLayer(LoopInd1) / (-DepthSoilLayer(NumSoilLayer)))  / &
-                ThicknessSnowSoilLayer(LoopInd1)
+             SoilLiqWater(LoopInd1) = theta_equil(LoopInd1)
              ! Clamp to valid range
              SoilLiqWater(LoopInd1) = max(0.0_kind_noahmp, &
                                       min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))

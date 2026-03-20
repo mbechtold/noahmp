@@ -316,4 +316,89 @@ contains
     end associate
   end subroutine MicroTopoCorrection
 
+  !=======================================================================
+  ! MicroTopoEquilibriumProfile: per-layer equilibrium soil moisture
+  ! at a given WTD, averaged over the multi-column Gaussian ensemble.
+  ! Returns theta_equil(1:NumSoilLayer).
+  !=======================================================================
+  pure subroutine MicroTopoEquilibriumProfile(WTD, NumSoilLayer, DepthSoilLayer, &
+                                               theta_s, psi_ae, bcoeff, sigma, &
+                                               theta_equil)
+    implicit none
+    real(kind=kind_noahmp), intent(in)  :: WTD
+    integer,                intent(in)  :: NumSoilLayer
+    real(kind=kind_noahmp), intent(in)  :: DepthSoilLayer(NumSoilLayer)
+    real(kind=kind_noahmp), intent(in)  :: theta_s, psi_ae, bcoeff, sigma
+    real(kind=kind_noahmp), intent(out) :: theta_equil(NumSoilLayer)
+
+    integer :: i, k, j
+    integer, parameter :: Nsub = 10
+    real(kind=kind_noahmp) :: z_lo, z_hi, dz_quad, z_s, weight, total_weight
+    real(kind=kind_noahmp) :: z_top, z_bot, z_top_eff, dz_sub, z_mid
+    real(kind=kind_noahmp) :: h_above_wt, theta_eq, layer_def, dz_k
+    real(kind=kind_noahmp) :: deficit_layer(NumSoilLayer)
+
+    deficit_layer(:) = 0.0_kind_noahmp
+    total_weight     = 0.0_kind_noahmp
+
+    z_lo = -4.0_kind_noahmp * sigma
+    z_hi = z_elev_max
+    dz_quad = (z_hi - z_lo) / real(NumQuadPoints, kind_noahmp)
+
+    do i = 1, NumQuadPoints
+       z_s = z_lo + (real(i, kind_noahmp) - 0.5_kind_noahmp) * dz_quad
+       weight = GaussianPDF(z_s, sigma) * dz_quad
+       total_weight = total_weight + weight
+
+       do k = 1, NumSoilLayer
+          if (k == 1) then
+             z_top = 0.0_kind_noahmp
+          else
+             z_top = DepthSoilLayer(k-1)
+          endif
+          z_bot = DepthSoilLayer(k)
+
+          if (z_s <= z_bot) cycle
+          z_top_eff = min(z_top, z_s)
+
+          dz_sub = (z_top_eff - z_bot) / real(Nsub, kind_noahmp)
+          if (dz_sub <= 0.0_kind_noahmp) cycle
+
+          layer_def = 0.0_kind_noahmp
+          do j = 1, Nsub
+             z_mid = z_bot + (real(j, kind_noahmp) - 0.5_kind_noahmp) * dz_sub
+             h_above_wt = z_mid + WTD
+             if (h_above_wt < 0.0_kind_noahmp) then
+                theta_eq = theta_s
+             else
+                theta_eq = CampbellTheta(h_above_wt, theta_s, psi_ae, bcoeff)
+             endif
+             layer_def = layer_def + (theta_s - theta_eq) * dz_sub
+          enddo
+
+          deficit_layer(k) = deficit_layer(k) + layer_def * weight
+       enddo
+    enddo
+
+    if (total_weight > 0.0_kind_noahmp) then
+       deficit_layer(:) = deficit_layer(:) / total_weight
+    endif
+
+    ! Convert per-layer deficit to equilibrium theta
+    do k = 1, NumSoilLayer
+       if (k == 1) then
+          dz_k = -DepthSoilLayer(1)
+       else
+          dz_k = -(DepthSoilLayer(k) - DepthSoilLayer(k-1))
+       endif
+       if (dz_k > 0.0_kind_noahmp) then
+          theta_equil(k) = theta_s - deficit_layer(k) / dz_k
+       else
+          theta_equil(k) = theta_s
+       endif
+       theta_equil(k) = max(0.0_kind_noahmp, min(theta_s, theta_equil(k)))
+    enddo
+
+  end subroutine MicroTopoEquilibriumProfile
+
 end module MicroTopoCorrectionMod
