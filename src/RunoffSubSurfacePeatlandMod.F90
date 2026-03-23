@@ -67,8 +67,7 @@ contains
     
     RunoffSubsurface = min(0.0002,RunoffSubSurface)
     
-    ! Set FSW_change to zero for following calculations in SoilWaterMain and WaterBalanceError Check
-    FSW_change = 0.0
+    ! FSW_change is now computed in SoilWaterMainMod from WTD diagnosis (Bechtold, 2026)
 
     end associate
 

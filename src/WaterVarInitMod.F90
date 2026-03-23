@@ -195,6 +195,7 @@ contains
     noahmp%water%flux%EvapIrriSprinkler            = 0.0
     noahmp%water%flux%TileDrain                    = 0.0
     noahmp%water%state%FSW_change                  = 0.0
+    noahmp%water%state%FSW_peat_error              = 0.0
     noahmp%water%state%f_soil                      = undefined_real
     noahmp%water%state%FloodedFraction             = 0.0
 

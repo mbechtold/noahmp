@@ -58,13 +58,14 @@ module PeatMicroTopoMod
   integer, parameter :: n_gl_fine = 400
   real(kind=kind_noahmp), dimension(n_gl_fine) :: gl_nodes_fine, gl_weights_fine
 
-  ! Precomputed quadrature coefficients for NoahMP soil domain.
-  ! GL nodes map [-1,1] → elevation [-z_trunc, 0] (depth 0 to z_trunc).
-  ! wt_soil_micro(k) = gl_weights(k) * (1 - Fs_cdf(z_mid + z_half * gl_nodes(k)))
-  ! where z_mid = -z_trunc/2, z_half = z_trunc/2.
-  ! Hummock soil above the mean surface (elevation > 0) is NOT in any
-  ! NoahMP layer, so it is excluded from these integrals.
-  real(kind=kind_noahmp), dimension(n_gl) :: wt_soil_micro
+  ! Precomputed quadrature coefficients for column-averaging over the
+  ! truncated Gaussian surface elevation distribution.
+  ! GL nodes map [-1,1] → elevation [-z_trunc, +z_trunc].
+  ! wt_pdf(k)    = gl_weights(k) * z_trunc * phi_pdf(z_s_nodes(k)/sigma) / (sigma * norm_factor)
+  ! z_s_nodes(k) = z_trunc * gl_nodes(k)
+  ! All microtopo-aware functions become: sum_k wt_pdf(k) * FlatColumnFunction(z_s_nodes(k) - z_wt)
+  real(kind=kind_noahmp), dimension(n_gl) :: wt_pdf
+  real(kind=kind_noahmp), dimension(n_gl) :: z_s_nodes
 
   ! Flag for initialization
   logical, save :: gl_initialized = .false.
@@ -87,15 +88,18 @@ contains
     call ComputeGaussLegendre(n_gl_lite, gl_nodes_lite, gl_weights_lite)
     call ComputeGaussLegendre(n_gl_fine, gl_nodes_fine, gl_weights_fine)
 
-    ! Precompute weighted soil fractions for NoahMP soil domain.
-    ! GL nodes map [-1,1] → elevation [-z_trunc, 0] (below mean surface).
-    ! This excludes hummock soil above the mean surface (z > 0), which
-    ! is not tracked by any NoahMP soil layer.
-    do k = 1, n_gl
-       wt_soil_micro(k) = gl_weights(k) * &
-           (1.0_kind_noahmp - Fs_cdf(-0.5_kind_noahmp * z_trunc &
-                                      + 0.5_kind_noahmp * z_trunc * gl_nodes(k)))
-    enddo
+    ! Precompute column-averaging quadrature weights.
+    ! GL nodes map [-1,1] → surface elevation [-z_trunc, +z_trunc].
+    ! wt_pdf(k) encodes the truncated Gaussian PDF weight at each node.
+    block
+      real(kind=kind_noahmp) :: norm_factor
+      norm_factor = phi_normal(z_trunc / sigma_elev) - phi_normal(-z_trunc / sigma_elev)
+      do k = 1, n_gl
+         z_s_nodes(k) = z_trunc * gl_nodes(k)
+         wt_pdf(k)    = gl_weights(k) * z_trunc * &
+                         phi_pdf(z_s_nodes(k) / sigma_elev) / (sigma_elev * norm_factor)
+      enddo
+    end block
 
     gl_initialized = .true.
 
@@ -360,65 +364,39 @@ contains
   end function SoilWaterStorageMicroTopo
 
   !========================================================================
-  ! Lightweight soil water storage [m] for water table at z_wt.
-  ! Same physics as SoilWaterStorageMicroTopo but uses n_gl (40-pt)
-  ! instead of n_gl_fine (400-pt) for the microtopo zone.
+  ! Column-averaged soil water storage [m] for water table at z_wt.
   !
-  ! Integrates over the NoahMP layer domain only: elevation -z_col_bot
-  ! to 0.  Hummock soil above mean surface is excluded.
+  ! W(z_wt) = sum_k wt_pdf(k) * W_flat(z_s_nodes(k) - z_wt, z_col_bot)
+  !
+  ! where W_flat(WTD) = theta_s * z_cb - SingleColumnDeficit(WTD)
+  ! for WTD > 0, or W_flat = theta_s * z_cb for WTD <= 0.
+  !
+  ! This function is monotonically increasing over
+  ! [-z_col_bot - z_trunc, +z_trunc], allowing unique inversion.
   !
   ! Designed for fast repeated evaluation inside FindWaterTable.
-  ! Accuracy is sufficient for WTD diagnosis (tolerance 1e-5 m).
   !========================================================================
-  function SoilWaterStorageMicroTopoLite(z_wt, theta_s, h_e, b_camp, z_col_bot) result(A_soil)
+  function SoilWaterStorageMicroTopoLite(z_wt, theta_s, h_e, b_camp, z_col_bot) result(W_col_avg)
     implicit none
     real(kind=kind_noahmp), intent(in) :: z_wt, theta_s, h_e, b_camp, z_col_bot
-    real(kind=kind_noahmp) :: A_soil
-    real(kind=kind_noahmp) :: h_pt, inv_b, A_sub, z_mid_d, z_half_d
+    real(kind=kind_noahmp) :: W_col_avg
+    real(kind=kind_noahmp) :: W_sat, WTD_local
     integer :: k
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
-    A_soil = 0.0_kind_noahmp
-    inv_b  = -1.0_kind_noahmp / b_camp
+    W_sat = theta_s * z_col_bot  ! storage of a fully saturated column
 
-    ! --- Deep zone [-z_col_bot, -z_trunc]: soil_frac ≈ 1 (Fs negligible) ---
-    if (z_col_bot > z_trunc) then
-       if (z_wt >= -(z_trunc + h_e)) then
-          ! Entire deep zone saturated (common case for peatland WTDs)
-          A_soil = theta_s * (z_col_bot - z_trunc)
-       else
-          ! Partially unsaturated — GL without Fs_cdf (soil_frac = 1)
-          z_mid_d  = -0.5_kind_noahmp * (z_col_bot + z_trunc)
-          z_half_d =  0.5_kind_noahmp * (z_col_bot - z_trunc)
-          A_sub = 0.0_kind_noahmp
-          do k = 1, n_gl
-             h_pt = z_wt - (z_mid_d + z_half_d * gl_nodes(k))
-             if (h_pt >= -h_e) then
-                A_sub = A_sub + gl_weights(k) * theta_s
-             else
-                A_sub = A_sub + gl_weights(k) * theta_s * (abs(h_pt) / h_e) ** inv_b
-             endif
-          enddo
-          A_soil = A_sub * z_half_d
-       endif
-    endif
-
-    ! --- Microtopo zone [-z_trunc, 0]: precomputed soil fractions ---
-    ! Covers elevation -z_trunc to 0 (depth 0 to z_trunc), matching the
-    ! NoahMP layer domain.  GL nodes map to:
-    !   z(k) = -z_trunc/2 + (z_trunc/2) * gl_nodes(k)
-    A_sub = 0.0_kind_noahmp
+    W_col_avg = 0.0_kind_noahmp
     do k = 1, n_gl
-       h_pt = z_wt + 0.5_kind_noahmp * z_trunc &
-            - 0.5_kind_noahmp * z_trunc * gl_nodes(k)
-       if (h_pt >= -h_e) then
-          A_sub = A_sub + wt_soil_micro(k) * theta_s
+       WTD_local = z_s_nodes(k) - z_wt   ! local WTD for this column (positive = water table below surface)
+       if (WTD_local <= 0.0_kind_noahmp) then
+          ! Column is fully saturated (or flooded)
+          W_col_avg = W_col_avg + wt_pdf(k) * W_sat
        else
-          A_sub = A_sub + wt_soil_micro(k) * theta_s * (abs(h_pt) / h_e) ** inv_b
+          W_col_avg = W_col_avg + wt_pdf(k) * (W_sat - SingleColumnDeficit(WTD_local, theta_s, h_e, b_camp))
        endif
     enddo
-    A_soil = A_soil + A_sub * 0.5_kind_noahmp * z_trunc
 
   end function SoilWaterStorageMicroTopoLite
 
@@ -549,20 +527,17 @@ contains
 
   !========================================================================
   ! Specific yield of soil component (Eq. 5 / Eq. 6 in D&B 2015)
-  ! Sy_soil for water level change from z_l to z_u
+  ! Sy_soil for water level change from z_l to z_u, column-averaged.
   !
-  ! Sy_soil = (1/dz) * integral from -z_col_bot to +z_trunc of
-  !           (1-Fs(z)) * [theta(z_u-z) - theta(z_l-z)] dz
+  ! Sy_soil = (1/dz) * sum_k wt_pdf(k) * [W_flat(z_s(k)-z_u) - W_flat(z_s(k)-z_l)]
   !
-  ! Note: currently integrates over [-z_trunc, +z_trunc] since Sy
-  ! differences are negligible in the deep zone where soil_frac ≈ 1
-  ! and both theta(z_u-z) and theta(z_l-z) ≈ theta_s.
+  ! Only columns with WTD > 0 contribute non-trivially.
   !========================================================================
   function SysoilMicroTopo(z_l, z_u, theta_s, h_e, b_camp) result(sy)
     implicit none
     real(kind=kind_noahmp), intent(in) :: z_l, z_u, theta_s, h_e, b_camp
     real(kind=kind_noahmp) :: sy
-    real(kind=kind_noahmp) :: dz, theta_u, theta_l
+    real(kind=kind_noahmp) :: dz, WTD_u, WTD_l, D_u, D_l
     integer :: k
 
     if (.not. gl_initialized) call InitGaussLegendre()
@@ -573,17 +548,17 @@ contains
        return
     endif
 
-    ! Use precomputed wt_soil_micro for NoahMP domain [-z_trunc, 0].
-    ! GL nodes map to: z(k) = -z_trunc/2 + (z_trunc/2) * gl_nodes(k)
+    ! Column-averaging: integrate over surface elevation distribution
     sy = 0.0_kind_noahmp
     do k = 1, n_gl
-       theta_u = theta_campbell(z_u + 0.5_kind_noahmp * z_trunc &
-                 - 0.5_kind_noahmp * z_trunc * gl_nodes(k), theta_s, h_e, b_camp)
-       theta_l = theta_campbell(z_l + 0.5_kind_noahmp * z_trunc &
-                 - 0.5_kind_noahmp * z_trunc * gl_nodes(k), theta_s, h_e, b_camp)
-       sy = sy + wt_soil_micro(k) * (theta_u - theta_l)
+       WTD_u = z_s_nodes(k) - z_u   ! local WTD at upper water table position
+       WTD_l = z_s_nodes(k) - z_l   ! local WTD at lower water table position
+       ! W_flat = theta_s * z_cb - deficit; difference = deficit_l - deficit_u
+       D_u = SingleColumnDeficit(max(0.0_kind_noahmp, WTD_u), theta_s, h_e, b_camp)
+       D_l = SingleColumnDeficit(max(0.0_kind_noahmp, WTD_l), theta_s, h_e, b_camp)
+       sy = sy + wt_pdf(k) * (D_l - D_u)
     enddo
-    sy = sy * 0.5_kind_noahmp * z_trunc / dz
+    sy = sy / dz
 
     sy = max(0.0_kind_noahmp, sy)
 
@@ -686,23 +661,27 @@ contains
   end function FsoilMicroTopo
 
   !========================================================================
-  ! Find water table from soil water storage (microtopo-aware)
+  ! Find water table from soil water storage (column-averaged)
   !
   ! Given total soil water content [m] (sum of SoilLiqWater × dz),
-  ! finds z_wt such that the microtopo-integrated hydrostatic soil water
-  ! over the NoahMP layer domain (elevation -z_col_bot to 0) equals the
-  ! observed amount.  Hummock soil above the mean surface is excluded
-  ! because it is not tracked by any NoahMP soil layer.
+  ! finds z_wt such that the column-averaged hydrostatic soil water
+  ! storage equals the observed amount.
   !
-  ! Uses warm-start bracketing when z_wt_prev is provided: starts
-  ! with a ±0.5 m bracket around the hint, expanding to the full
-  ! range [-z_col_bot, 0] if the target is not contained.
+  ! Uses the column-averaged SoilWaterStorageMicroTopoLite which
+  ! integrates W_flat(z_s - z_wt) over the Gaussian surface distribution.
+  !
+  ! Bracket: [-z_col_bot - z_trunc, +z_trunc]
+  !   - At upper bound: all columns saturated, W = theta_s * z_cb
+  !   - At lower bound: driest possible state
+  !
+  ! Derivative: dW/dz_wt = sum_k wt_pdf(k) * Sy_flat(z_s(k) - z_wt)
+  ! where Sy_flat(WTD) = theta_s * [1 - (WTD/h_e)^(-1/b)] for WTD > h_e
   !
   ! soil_water_content: total soil water [m], sum of SoilLiqWater(i)*dz(i)
   ! theta_s, h_e, b_camp: Campbell soil parameters
   ! z_col_bot: soil column bottom depth [m], positive downward
   ! z_wt_prev: optional warm-start hint (z_wt from previous timestep)
-  ! Returns:   z_wt [m], positive upward (D&B convention), capped at 0
+  ! Returns:   z_wt [m], positive upward (D&B convention)
   !========================================================================
   function FindWaterTable(soil_water_content, theta_s, h_e, b_camp, z_col_bot, z_wt_prev) result(z_wt)
     implicit none
@@ -710,9 +689,9 @@ contains
     real(kind=kind_noahmp), intent(in), optional :: z_wt_prev
     real(kind=kind_noahmp) :: z_wt
     real(kind=kind_noahmp) :: z_lo, z_hi, z_new, W_lo, W_hi
-    real(kind=kind_noahmp) :: W_val, dW_val, h_pt, theta_val, inv_b, A_deep
+    real(kind=kind_noahmp) :: W_val, dW_val, WTD_local, Sy_flat_val, inv_b
     integer :: iter, k
-    integer, parameter :: max_iter = 20
+    integer, parameter :: max_iter = 30
     real(kind=kind_noahmp), parameter :: tol = 1.0e-5_kind_noahmp
     real(kind=kind_noahmp), parameter :: warm_margin = 0.5_kind_noahmp
 
@@ -720,27 +699,25 @@ contains
 
     inv_b = -1.0_kind_noahmp / b_camp
 
-    ! Deep-zone contribution (constant when fully saturated = common case)
-    A_deep = 0.0_kind_noahmp
-    if (z_col_bot > z_trunc) A_deep = theta_s * (z_col_bot - z_trunc)
+    ! --- Full bracket: [-z_col_bot - z_trunc, +z_trunc] ---
+    ! z_wt = +z_trunc: all columns saturated, W = theta_s * z_cb
+    ! z_wt = -(z_col_bot + z_trunc): driest possible state
 
     ! --- Set up bracket with optional warm-start ---
-    ! Upper bracket = 0: z_wt > 0 means WT above mean surface, where
-    ! all NoahMP soil is saturated and storage function plateaus.
     if (present(z_wt_prev)) then
-       z_lo = max(-z_col_bot, z_wt_prev - warm_margin)
-       z_hi = min( 0.0_kind_noahmp,   z_wt_prev + warm_margin)
+       z_lo = max(-(z_col_bot + z_trunc), z_wt_prev - warm_margin)
+       z_hi = min( z_trunc,               z_wt_prev + warm_margin)
        W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
        W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
        if (soil_water_content < W_lo .or. soil_water_content > W_hi) then
-          z_lo = -z_col_bot
-          z_hi =  0.0_kind_noahmp
+          z_lo = -(z_col_bot + z_trunc)
+          z_hi =  z_trunc
           W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
           W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
        endif
     else
-       z_lo = -z_col_bot
-       z_hi =  0.0_kind_noahmp
+       z_lo = -(z_col_bot + z_trunc)
+       z_hi =  z_trunc
        W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot)
        W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot)
     endif
@@ -753,7 +730,6 @@ contains
     endif
 
     ! --- Safeguarded Newton-Raphson ---
-    ! Start from warm-start hint (clamped to bracket) or midpoint
     if (present(z_wt_prev)) then
        z_wt = max(z_lo, min(z_hi, z_wt_prev))
     else
@@ -761,23 +737,24 @@ contains
     endif
 
     do iter = 1, max_iter
-       ! Compute W(z_wt) and dW/dz_wt in a single pass
-       ! Deep zone: fully saturated → constant, derivative = 0
-       W_val  = A_deep
+       ! Compute W(z_wt) and dW/dz_wt in a single pass using column-averaging
+       W_val  = 0.0_kind_noahmp
        dW_val = 0.0_kind_noahmp
-       ! Microtopo zone [-z_trunc, 0]: use precomputed wt_soil_micro
        do k = 1, n_gl
-          h_pt = z_wt + 0.5_kind_noahmp * z_trunc &
-               - 0.5_kind_noahmp * z_trunc * gl_nodes(k)
-          if (h_pt >= -h_e) then
-             W_val = W_val + wt_soil_micro(k) * theta_s &
-                   * 0.5_kind_noahmp * z_trunc
+          WTD_local = z_s_nodes(k) - z_wt
+          if (WTD_local <= 0.0_kind_noahmp) then
+             ! Saturated column: W = theta_s * z_cb, dW/dz_wt = 0
+             W_val = W_val + wt_pdf(k) * theta_s * z_col_bot
           else
-             theta_val = theta_s * (abs(h_pt) / h_e) ** inv_b
-             W_val  = W_val  + wt_soil_micro(k) * theta_val &
-                    * 0.5_kind_noahmp * z_trunc
-             dW_val = dW_val + wt_soil_micro(k) * theta_val / &
-                      (b_camp * abs(h_pt)) * 0.5_kind_noahmp * z_trunc
+             W_val = W_val + wt_pdf(k) * (theta_s * z_col_bot - &
+                     SingleColumnDeficit(WTD_local, theta_s, h_e, b_camp))
+             ! Sy_flat = theta_s * [1 - (WTD/h_e)^(-1/b)] for WTD > h_e, else 0
+             if (WTD_local > h_e) then
+                Sy_flat_val = theta_s * (1.0_kind_noahmp - (WTD_local / h_e) ** inv_b)
+             else
+                Sy_flat_val = 0.0_kind_noahmp
+             endif
+             dW_val = dW_val + wt_pdf(k) * Sy_flat_val
           endif
        enddo
 
@@ -988,39 +965,31 @@ contains
   end function EquilibriumSMFlat
 
   !========================================================================
-  ! Hydrostatic equilibrium soil moisture integrated over microtopography
-  ! (SOIL WATER ONLY — no surface water in hollows)
+  ! Column-averaged hydrostatic equilibrium soil moisture
   !
-  ! Computes the average volumetric soil moisture in a layer, weighted by
-  ! the fraction of the microtopographic surface that has soil at each
-  ! depth:
+  ! theta_eq(d_top, d_bot, z_wt) = sum_k wt_pdf(k) *
+  !     EquilibriumSMFlat(d_top, d_bot, z_s_nodes(k) - z_wt, theta_s, h_e, b)
   !
-  !   theta_eq = (1 / layer_thick) *
-  !              integral_{d_top}^{d_bot} (1 - Fs(-d)) * theta(d - WTD) dd
+  ! Each column has its surface at z_s, so its local WTD = z_s - z_wt.
+  ! Columns with z_s <= z_wt are saturated (WTD <= 0) and contribute theta_s.
+  ! Columns with z_s > z_wt have genuinely unsaturated soil in upper layers.
   !
-  ! where (1 - Fs(-d)) = fraction of area with soil at depth d, and
-  ! theta(d - WTD) is the Campbell retention at hydrostatic pressure.
-  !
-  ! This gives total soil water in the layer divided by layer thickness.
-  ! Surface water in hollows is NOT included (tracked via FSW_change).
-  !
-  ! The result is always <= theta_s because (1 - Fs(-d)) <= 1.
-  ! For deep layers (d >> z_trunc), soil_frac -> 1 and the result
-  ! converges to the flat-surface equilibrium.
+  ! Fast path for deep layers (d_top > 2.3*sigma): all columns have 
+  ! essentially the same unsaturated zone structure at this depth, so
+  ! the result equals EquilibriumSMFlat directly.
   !
   ! d_top, d_bot: layer depth bounds [m], positive downward (d_top < d_bot)
-  ! WTD:          water table depth [m], positive downward
+  ! WTD:          water table depth [m], positive downward (= -z_wt)
   !========================================================================
   function EquilibriumSMMicroTopo(d_top, d_bot, WTD, theta_s, h_e, b_camp) result(theta_eq)
     implicit none
     real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD, theta_s, h_e, b_camp
     real(kind=kind_noahmp) :: theta_eq
-    real(kind=kind_noahmp) :: d_mid, d_half, d_pt, h_pt, soil_frac
+    real(kind=kind_noahmp) :: z_wt_local, WTD_local
     integer :: k
 
     ! Fast path: for layers well below the microtopo zone (d_top > ~2.3*sigma),
     ! soil_frac ≈ 1 everywhere and the result equals EquilibriumSMFlat.
-    ! Avoids 5-pt GL quadrature + Fs_cdf calls for layers 3 and 4.
     if (d_top > 2.326_kind_noahmp * sigma_elev) then
        theta_eq = EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp)
        return
@@ -1028,19 +997,15 @@ contains
 
     if (.not. gl_initialized) call InitGaussLegendre()
 
-    d_mid  = 0.5_kind_noahmp * (d_top + d_bot)
-    d_half = 0.5_kind_noahmp * (d_bot - d_top)
+    z_wt_local = -WTD  ! convert to D&B convention
 
     theta_eq = 0.0_kind_noahmp
-    do k = 1, n_gl_lite
-       d_pt = d_mid + d_half * gl_nodes_lite(k)
-       ! Soil fraction at depth d_pt: fraction of surface ABOVE elevation -d_pt
-       soil_frac = 1.0_kind_noahmp - Fs_cdf(-d_pt)
-       ! Pressure head at depth d_pt for WT at WTD
-       h_pt = d_pt - WTD
-       theta_eq = theta_eq + gl_weights_lite(k) * soil_frac * theta_campbell(h_pt, theta_s, h_e, b_camp)
+    do k = 1, n_gl
+       WTD_local = z_s_nodes(k) - z_wt_local   ! local WTD for this column
+       ! EquilibriumSMFlat handles WTD <= 0 (returns theta_s)
+       theta_eq = theta_eq + wt_pdf(k) * &
+                  EquilibriumSMFlat(d_top, d_bot, WTD_local, theta_s, h_e, b_camp)
     enddo
-    theta_eq = theta_eq * d_half / (d_bot - d_top)
 
   end function EquilibriumSMMicroTopo
 

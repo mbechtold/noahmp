@@ -132,6 +132,7 @@ module WaterVarType
     real(kind=kind_noahmp) :: SoilWaterRootZone          ! root zone soil water
     real(kind=kind_noahmp) :: SoilWaterStress            ! soil water stress
     real(kind=kind_noahmp) :: FSW_change                 ! Free surface water storage change [mm] 
+    real(kind=kind_noahmp) :: FSW_peat_error             ! Peatland numerical water balance error [mm]
     real(kind=kind_noahmp) :: f_soil                     ! fraction of flux going to soil [-] (Sy_soil/Sy_total)
     real(kind=kind_noahmp) :: FloodedFraction            ! fraction of surface below water table [-] (Gaussian CDF)
     real(kind=kind_noahmp) :: WaterStorageTotBeg         ! total water storage [mm] at the begining before NoahMP process

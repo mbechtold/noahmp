@@ -25,7 +25,8 @@ module SoilWaterMainMod
   use PeatMicroTopoMod,                  only : FloodedFrac, FsoilMicroTopo, &
                                                  EquilibriumSMFlat,           &
                                                  EquilibriumSMMicroTopo,      &
-                                                 FindWaterTable
+                                                 FindWaterTable,              &
+                                                 SurfaceWaterStorage
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
   use TileDrainageSimpleMod,             only : TileDrainageSimple
@@ -65,7 +66,11 @@ contains
     real(kind=kind_noahmp)            :: InfilRateSfc_FSW_change      ! surface water infiltration flux
     real(kind=kind_noahmp)            :: W_soil_peat                  ! total soil water content [m]
     real(kind=kind_noahmp)            :: z_wt_peat                    ! water table elevation (z positive up) [m]
-    real(kind=kind_noahmp), parameter :: WaterTableDepthMinPeat = -1.0
+    real(kind=kind_noahmp)            :: z_wt_begin                   ! z_wt at timestep start [m]
+    real(kind=kind_noahmp)            :: z_wt_end                     ! z_wt at timestep end [m]
+    real(kind=kind_noahmp)            :: WTD_begin                    ! WTD at timestep start [m], positive downward
+    real(kind=kind_noahmp)            :: FSW_change_flux              ! FSW_change from flux accumulation [mm]
+    real(kind=kind_noahmp), parameter :: WTD_equil_threshold = 0.3_kind_noahmp  ! WTD threshold for equilibrium bypass [m]
     real(kind=kind_noahmp), parameter :: SoilImpPara = 4.0            ! soil impervious fraction parameter
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatRight     ! right-hand side term of the matrix
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft1     ! left-hand side term
@@ -77,8 +82,19 @@ contains
     real(kind=kind_noahmp)            :: thetas_peat, ae_peat, bb_peat! Campbell peat parameters
     real(kind=kind_noahmp)            :: SM_eq_flat_tmp                ! temporary flat equilibrium SM
     real(kind=kind_noahmp)            :: SM_eq_micro_tmp               ! temporary microtopo equilibrium SM
+    real(kind=kind_noahmp)            :: SM_excess_tmp                  ! excess (departure from equil) [m3/m3]
     real(kind=kind_noahmp)            :: SM_old_peat                   ! SoilLiqWater before transfer [m3/m3]
-    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer gap added in forward transfer [m3/m3]
+    real(kind=kind_noahmp)            :: excess_vol                    ! overflow excess volume [m]
+    real(kind=kind_noahmp)            :: space_avail                   ! available pore space [m]
+    real(kind=kind_noahmp)            :: transfer_vol                  ! overflow transfer volume [m]
+    real(kind=kind_noahmp)            :: InfilSoil_peat                ! soil-portion infiltration [m/s]
+    real(kind=kind_noahmp)            :: EvapSoil_peat                 ! soil-portion evaporation [mm/s]
+    real(kind=kind_noahmp)            :: TranspSoil_peat               ! soil-portion transpiration [mm/s]
+    real(kind=kind_noahmp)            :: RunoffSoil_peat               ! soil-portion runoff [mm]
+    integer                           :: LoopJ                         ! overflow cascade index
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer change in forward transfer [m3/m3]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -115,6 +131,7 @@ contains
               SoilSaturationExcess   => noahmp%water%state%SoilSaturationExcess     ,& ! out,   saturation excess of the total soil [m]
               SoilIceMax             => noahmp%water%state%SoilIceMax               ,& ! out,   maximum soil ice content [m3/m3]
               FSW_change             => noahmp%water%state%FSW_change               ,& ! inout,   surface storage change [mm]
+              FSW_peat_error         => noahmp%water%state%FSW_peat_error           ,& ! inout,   peatland numerical water balance error [mm]
               FloodedFraction        => noahmp%water%state%FloodedFraction          ,& ! inout,   flooded fraction [-]
               f_soil                 => noahmp%water%state%f_soil                   ,& ! inout, fraction of flux in and out of soil [-]
               SoilLiqWaterMin        => noahmp%water%state%SoilLiqWaterMin         ,& ! out,   minimum soil liquid water content [m3/m3]
@@ -172,7 +189,7 @@ contains
     if ( OptRunoffSubsurface == 2 ) call RunoffSubSurfaceEquiWaterTable(noahmp)
     
     ! ================================================================
-    ! Peatland: Diagnose WTD from soil water (microtopo-aware)
+    ! Peatland: Diagnose WTD from soil water (column-averaged)
     ! Then compute Ivanov runoff using the diagnosed WTD.
     ! (Bechtold, 2026)
     ! ================================================================
@@ -189,10 +206,12 @@ contains
               SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
        enddo
 
-       ! Diagnose microtopo-aware water table from soil storage
+       ! Diagnose column-averaged water table from soil storage
        z_wt_peat = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
            bb_peat, z_col_bot_peat, -WaterTableDepth)
-       WaterTableDepth = max(-z_wt_peat, WaterTableDepthMinPeat)
+       WaterTableDepth = -z_wt_peat   ! NO clamp — FindWaterTable handles full range
+       z_wt_begin = z_wt_peat          ! store for FSW_change computation
+       WTD_begin  = WaterTableDepth
     endif
 
     ! Peatland: Ivanov runoff (uses diagnosed WTD)
@@ -203,48 +222,255 @@ contains
 
     ! jref impermable surface at urban
     if ( FlagUrban .eqv. .true. ) SoilImpervFrac(1) = 0.95
-    
-    WaterTableDepth = max(WaterTableDepth, WaterTableDepthMinPeat)
 
     ! ================================================================
-    ! Peatland forward excess transfer (Bechtold, 2026)
-    ! SoilLiqWater at this point = microtopo-integrated soil moisture.
-    ! Compute departure from microtopo equilibrium and map to flat 1D
-    ! profile for the Richards equation solver.
+    ! Peatland: Two-regime algorithm (Bechtold, 2026)
+    ! Equilibrium bypass for WTD < 0.3 m, Richards path for WTD >= 0.3 m
     ! ================================================================
     if ( OptPeatlandPhysics == 1 ) then
-       if (.not. allocated(SoilLiqGap)) allocate(SoilLiqGap(1:NumSoilLayer))
 
-       thetas_peat    = SoilMoistureSat(1)
-       ae_peat        = abs(SoilMatPotentialSat(1))
-       bb_peat        = SoilExpCoeffB(1)
-       z_col_bot_peat = abs(DepthSoilLayer(NumSoilLayer))
+       ! --- Common initial steps ---
+       call MicroTopoCorrection(noahmp)   ! Compute f_soil and FloodedFraction
 
-       do LoopInd1 = 1, NumSoilLayer
-          if (LoopInd1 == 1) then
-             d_top_peat = 0.0_kind_noahmp
-          else
-             d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+       ! surface runoff and infiltration rate
+       if ( OptRunoffSurface == 1 ) call RunoffSurfaceTopModelGrd(noahmp)
+       if ( OptRunoffSurface == 2 ) call RunoffSurfaceTopModelEqui(noahmp)
+       if ( OptRunoffSurface == 3 ) call RunoffSurfaceFreeDrain(noahmp,SoilTimeStep)
+       if ( OptRunoffSurface == 4 ) call RunoffSurfaceBATS(noahmp)
+       if ( OptRunoffSurface == 5 ) call RunoffSurfaceTopModelMMF(noahmp)
+       if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,SoilTimeStep)
+       if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,SoilTimeStep)
+       if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,SoilTimeStep,InfilSfcAcc)
+
+       ! Add RunoffSurface back to infiltration for peatland
+       InfilRateSfc = InfilRateSfc + RunoffSurface
+       RunoffSurface = 0.0
+
+       ! Partition infiltration flux
+       InfilRateSfc_FSW_change = (1.0_kind_noahmp - f_soil) * InfilRateSfc
+       InfilRateSfc = f_soil * InfilRateSfc
+
+       ! ================================================================
+       ! EQUILIBRIUM PATH: WTD < 0.3 m (Shallow WT, bypass Richards)
+       ! ================================================================
+       if ( WTD_begin < WTD_equil_threshold ) then
+
+          ! Soil-side net flux
+          InfilSoil_peat  = InfilRateSfc                                             ! [m/s], already f_soil-scaled
+          EvapSoil_peat   = f_soil * EvapGroundNet                                   ! [mm/s]
+          TranspSoil_peat = f_soil * Transpiration                                   ! [mm/s]
+          RunoffSoil_peat = f_soil * RunoffSubsurface * SoilTimeStep                 ! [mm]
+
+          ! Update total soil water [m]
+          W_soil_peat = W_soil_peat + InfilSoil_peat * SoilTimeStep                  ! [m] infil
+          W_soil_peat = W_soil_peat - EvapSoil_peat * SoilTimeStep / 1000.0_kind_noahmp   ! [m] evap
+          W_soil_peat = W_soil_peat - TranspSoil_peat * SoilTimeStep / 1000.0_kind_noahmp ! [m] transp
+          W_soil_peat = W_soil_peat - RunoffSoil_peat / 1000.0_kind_noahmp                ! [m] runoff
+
+          ! Diagnose new WTD from updated water storage
+          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat, z_wt_begin)
+          WaterTableDepth = -z_wt_end
+
+          ! Set soil moisture to column-averaged hydrostatic equilibrium
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+          enddo
+
+          ! Flux-based FSW_change diagnostic reference
+          FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
+                          - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+
+          ! No Richards iterations needed
+          DrainSoilBot = 0.0
+          RunoffSurface = 0.0                ! mm/s; already added to InfilRateSfc
+
+       ! ================================================================
+       ! RICHARDS PATH: WTD >= 0.3 m (Deep WT, full Richards)
+       ! ================================================================
+       else
+
+          ! --- Forward excess transfer: column-averaged → 1D ---
+          if (.not. allocated(SoilLiqWaterOrig))   allocate(SoilLiqWaterOrig(1:NumSoilLayer))
+          if (.not. allocated(SoilLiqWater1D_bef)) allocate(SoilLiqWater1D_bef(1:NumSoilLayer))
+
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+
+             SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+             SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+             SM_excess_tmp = SoilLiqWater(LoopInd1) - SM_eq_micro_tmp
+
+             ! Store original column-averaged profile
+             SoilLiqWaterOrig(LoopInd1) = SoilLiqWater(LoopInd1)
+
+             ! Build 1D profile: flat equilibrium + excess
+             SoilLiqWater(LoopInd1) = SM_eq_flat_tmp + SM_excess_tmp
+             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, &
+                 min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
+
+             ! Store 1D profile before Richards for delta computation
+             SoilLiqWater1D_bef(LoopInd1) = SoilLiqWater(LoopInd1)
+          enddo
+
+          ! --- Determine iteration times ---
+          NumIterSoilWat = 3
+          if ( (InfilRateSfc*SoilTimeStep) > (ThicknessSnowSoilLayer(1)*SoilMoistureSat(1)) ) then
+             NumIterSoilWat = NumIterSoilWat*2
           endif
-          d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+          TimeStepFine = SoilTimeStep / NumIterSoilWat
 
-          SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-              WaterTableDepth, thetas_peat, ae_peat, bb_peat)
-          SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
-              WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+          ! --- Solve soil moisture via Richards ---
+          InfilSfcAcc      = 1.0e-06
+          DrainSoilBotAcc  = 0.0
+          RunoffSurfaceAcc = 0.0
 
-          ! Store the actual gap applied per layer for exact reversal
-          SM_old_peat = SoilLiqWater(LoopInd1)
-          SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) + (SM_eq_flat_tmp - SM_eq_micro_tmp)
-          SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, &
-              min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
-          ! Record actual change (accounts for clamping)
-          SoilLiqGap(LoopInd1) = SoilLiqWater(LoopInd1) - SM_old_peat
+          do IndIter = 1, NumIterSoilWat
+             if ( SoilSfcInflowMean > 0.0 ) then
+                if ( OptRunoffSurface == 3 ) call RunoffSurfaceFreeDrain(noahmp,TimeStepFine)
+                if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,TimeStepFine)
+                if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,TimeStepFine)
+                if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,TimeStepFine,InfilSfcAcc)
+             endif
+             call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
+             call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
+             SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
+             DrainSoilBotAcc  = DrainSoilBotAcc + DrainSoilBot
+             RunoffSurfaceAcc = RunoffSurfaceAcc + RunoffSurface
+          enddo
+
+          DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
+          RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
+          RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
+
+          ! --- Remove f_soil fraction of subsurface runoff from soil ---
+          SoilWatConductAcc = 0.0
+          do LoopInd1 = 1, NumSoilLayer
+             SoilWatConductAcc = SoilWatConductAcc + SoilWatConductivity(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1)
+          enddo
+          if (SoilWatConductAcc > 0.0) then
+             do LoopInd1 = 1, NumSoilLayer
+                WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
+                             (SoilWatConductivity(LoopInd1)*ThicknessSnowSoilLayer(LoopInd1)) / SoilWatConductAcc
+                SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (ThicknessSnowSoilLayer(LoopInd1)*1000.0)
+             enddo
+          endif
+
+          ! --- Backward transfer: apply 1D changes to column-averaged profile ---
+          do LoopInd1 = 1, NumSoilLayer
+             SoilLiqWater(LoopInd1) = SoilLiqWaterOrig(LoopInd1) + &
+                 (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))
+          enddo
+
+          ! --- Saturation overflow cascade ---
+          do LoopInd1 = 1, NumSoilLayer
+             if (SoilLiqWater(LoopInd1) > SoilEffPorosity(LoopInd1)) then
+                excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
+                             abs(ThicknessSnowSoilLayer(LoopInd1))
+                SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
+                ! Try layer above
+                if (LoopInd1 > 1 .and. SoilLiqWater(LoopInd1-1) < SoilEffPorosity(LoopInd1-1)) then
+                   space_avail = (SoilEffPorosity(LoopInd1-1) - SoilLiqWater(LoopInd1-1)) * &
+                                 abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   transfer_vol = min(excess_vol, space_avail)
+                   SoilLiqWater(LoopInd1-1) = SoilLiqWater(LoopInd1-1) + &
+                       transfer_vol / abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   excess_vol = excess_vol - transfer_vol
+                endif
+                ! Try layers below
+                if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
+                   LoopJ = LoopInd1 + 1
+                   do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
+                      space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
+                                    abs(ThicknessSnowSoilLayer(LoopJ))
+                      if (space_avail > 0.0_kind_noahmp) then
+                         transfer_vol = min(excess_vol, space_avail)
+                         SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
+                             transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
+                         excess_vol = excess_vol - transfer_vol
+                      endif
+                      LoopJ = LoopJ + 1
+                   enddo
+                endif
+                ! Remaining excess → surface runoff
+                if (excess_vol > 0.0_kind_noahmp) then
+                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                endif
+             endif
+          enddo
+
+          ! Safety floor
+          do LoopInd1 = 1, NumSoilLayer
+             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
+          enddo
+
+          ! Flux-based FSW_change diagnostic reference
+          FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
+                          - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+
+          DrainSoilBot = DrainSoilBot * 1000.0  ! m/s -> mm/s
+
+       endif   ! end Richards path
+
+       ! ================================================================
+       ! Common final steps: Diagnose final WTD, FSW_change from WTD
+       ! ================================================================
+
+       ! Diagnose final WTD
+       W_soil_peat = 0.0_kind_noahmp
+       do LoopInd1 = 1, NumSoilLayer
+          W_soil_peat = W_soil_peat + &
+              SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
        enddo
-    endif
+       z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+           bb_peat, z_col_bot_peat, z_wt_begin)
+       WaterTableDepth = -z_wt_end
 
-    ! surface runoff and infiltration rate using different schemes
-    ! MB: Alternative idea which will produce the same output as PEATCLSM: 
+       ! FSW_change from WTD-diagnosed surface water storage (primary)
+       FSW_change = (SurfaceWaterStorage(z_wt_end) - SurfaceWaterStorage(z_wt_begin)) * 1000.0_kind_noahmp
+
+       ! Peatland numerical water balance error diagnostic
+       FSW_peat_error = FSW_change - FSW_change_flux
+
+       ! Update FloodedFraction from final WTD
+       FloodedFraction = FloodedFrac(-WaterTableDepth)
+
+       ! Accumulated RunoffSurface and RunoffSubsurface [mm per soil timestep]
+       RunoffSurface    = RunoffSurface    * SoilTimeStep
+       RunoffSubsurface = RunoffSubsurface * SoilTimeStep
+       TileDrain        = 0.0
+
+       ! Update soil moisture
+       do LoopInd1 = 1, NumSoilLayer
+           SoilMoisture(LoopInd1) = SoilLiqWater(LoopInd1) + SoilIce(LoopInd1)
+       enddo
+
+       ! Deallocate peatland local arrays
+       if (allocated(SoilLiqWaterOrig))   deallocate(SoilLiqWaterOrig)
+       if (allocated(SoilLiqWater1D_bef)) deallocate(SoilLiqWater1D_bef)
+       if (allocated(SoilLiqGap))         deallocate(SoilLiqGap)
+
+    else   ! non-peatland path
+
+    ! surface runoff and infiltration rate
     if ( OptRunoffSurface == 1 ) call RunoffSurfaceTopModelGrd(noahmp)
     if ( OptRunoffSurface == 2 ) call RunoffSurfaceTopModelEqui(noahmp)
     if ( OptRunoffSurface == 3 ) call RunoffSurfaceFreeDrain(noahmp,SoilTimeStep)
@@ -253,35 +479,18 @@ contains
     if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,SoilTimeStep)
     if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,SoilTimeStep)
     if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,SoilTimeStep,InfilSfcAcc)
-    
-    ! MB: We add RunoffSurface to the water that needs to infiltrate:
-    ! MB: ToDo, test with peat soil properties, currently leading to too high water balance errors
-    if ( OptPeatlandPhysics == 1 ) then
-       ! NOTE: from RunoffSurface routines, the RunoffSurface is still in m/s same as InfilRateSfc
-       InfilRateSfc = InfilRateSfc + RunoffSurface
-       RunoffSurface = 0.0
-    endif
 
-    ! determine iteration times  to solve soil water diffusion and moisture
+    ! determine iteration times
     NumIterSoilWat = 3
     if ( (InfilRateSfc*SoilTimeStep) > (ThicknessSnowSoilLayer(1)*SoilMoistureSat(1)) ) then
        NumIterSoilWat = NumIterSoilWat*2
     endif
     TimeStepFine = SoilTimeStep / NumIterSoilWat
 
-    ! solve soil moisture
+    ! solve soil moisture via Richards equation
     InfilSfcAcc      = 1.0e-06
     DrainSoilBotAcc  = 0.0
     RunoffSurfaceAcc = 0.0
-
-    !if ( OptRunoffSubsurface == 9 ) then
-    if ( OptPeatlandPhysics == 1 ) then
-               call MicroTopoCorrection(noahmp) ! Compute f_soil and FloodedFraction
-               ! Partition fluxes: f_soil fraction goes to soil Richards solver,
-               ! (1-f_soil) fraction goes to surface water storage
-               InfilRateSfc_FSW_change = (1.0_kind_noahmp - f_soil) * InfilRateSfc
-               InfilRateSfc = f_soil * InfilRateSfc
-    endif
 
     do IndIter = 1, NumIterSoilWat
        if ( SoilSfcInflowMean > 0.0 ) then
@@ -289,21 +498,7 @@ contains
           if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,TimeStepFine)
           if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,TimeStepFine)
           if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,TimeStepFine,InfilSfcAcc)
-          ! MB: During iteration, again we add RunoffSurface to the water that needs to infiltrate:
-          ! MB: ToDo, test with peat soil properties, currently leading to too high water balance errors
-          !if ( OptRunoffSubsurface == 9 ) then
-          !   InfilRateSfc = InfilRateSfc + RunoffSurface / SoilTimeStep / 1000.0 
-          ! division because units between InfilRateSfc and RunoffSurface differ
-          !   RunoffSurface = 0.0
-          !endif
-          !if ( OptRunoffSubsurface == 9 ) then
-          !if ( OptPeatlandPhysics == 1 ) then
-          !     InfilRateSfc_FSW_change = (1-f_soil)*InfilRateSfc
-          !     InfilRateSfc = f_soil*InfilRateSfc
-          !endif
        endif
-       
-       ! MB: Here the reduced InfilRateSfc will be redistributed as usual
        call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
        call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
        SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
@@ -311,30 +506,17 @@ contains
        RunoffSurfaceAcc = RunoffSurfaceAcc + RunoffSurface
     enddo
 
-    !if ( OptRunoffSubsurface == 9 ) then
-    if ( OptPeatlandPhysics == 1 ) then
-               ! Compute surface water storage change using flux partitioning
-               ! (1-f_soil) fraction of each flux goes to/from surface water
-               FSW_change = 0.0
-               ! Surface water receives (1-f_soil) fraction of infiltration
-               FSW_change = FSW_change + InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp
-               ! Surface water loses (1-f_soil) fraction of evaporation
-               FSW_change = FSW_change - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep
-               ! Surface water loses (1-f_soil) fraction of transpiration  
-               FSW_change = FSW_change - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep
-    endif
-
     DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
     RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
     RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep  ! m/s -> mm/s
     DrainSoilBot  = DrainSoilBot * 1000.0  ! m/s -> mm/s
 
-    ! compute tile drainage ! pvk
+    ! compute tile drainage
     if ( (OptTileDrainage == 1) .and. (TileDrainFrac > 0.3) .and. (OptRunoffSurface == 3) ) then
-       call TileDrainageSimple(noahmp)  ! simple tile drainage
+       call TileDrainageSimple(noahmp)
     endif
     if ( (OptTileDrainage == 2) .and. (TileDrainFrac > 0.1) .and. (OptRunoffSurface == 3) ) then
-       call TileDrainageHooghoudt(noahmp)  ! Hooghoudt tile drain
+       call TileDrainageHooghoudt(noahmp)
     END IF
 
     ! removal of soil water due to subsurface runoff (option 2)
@@ -350,30 +532,7 @@ contains
        enddo
     endif
 
-    ! Peatland: remove runoff from soil and surface water (Bechtold, 2026)
-    !if ( OptRunoffSubsurface == 9 ) then
-    if ( OptPeatlandPhysics == 1 ) then
-       ! Subsurface runoff is removed proportionally from soil layers
-       ! and from surface water according to f_soil / (1-f_soil) split
-       SoilWatConductAcc = 0.0
-       do LoopInd1 = 1, NumSoilLayer
-          SoilWatConductAcc = SoilWatConductAcc + SoilWatConductivity(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1)
-       enddo
-       if (SoilWatConductAcc > 0.0) then
-          do LoopInd1 = 1, NumSoilLayer
-             WaterRemove = RunoffSubsurface * SoilTimeStep * &
-                          (SoilWatConductivity(LoopInd1)*ThicknessSnowSoilLayer(LoopInd1)) / SoilWatConductAcc
-             ! Surface water portion of runoff removal
-             FSW_change = FSW_change - (1.0_kind_noahmp - f_soil) * WaterRemove
-             ! Soil portion
-             WaterRemove = f_soil * WaterRemove
-             SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (ThicknessSnowSoilLayer(LoopInd1)*1000.0)
-          enddo
-       endif
-    endif
-
-    ! Limit SoilLiqTmp to be greater than or equal to watmin.
-    ! Get water needed to bring SoilLiqTmp equal SoilWaterMin from lower layer.
+    ! Limit SoilLiqTmp safety
     if ( OptRunoffSubsurface /= 1 ) then
        do LoopInd2 = 1, NumSoilLayer
           SoilLiqTmp(LoopInd2) = SoilLiqWater(LoopInd2) * ThicknessSnowSoilLayer(LoopInd2) * 1000.0
@@ -403,7 +562,7 @@ contains
        do LoopInd2 = 1, NumSoilLayer
           SoilLiqWater(LoopInd2) = SoilLiqTmp(LoopInd2) / (ThicknessSnowSoilLayer(LoopInd2)*1000.0)
        enddo
-    endif ! OptRunoffSubsurface /= 1
+    endif
 
     ! compute groundwater and subsurface runoff
     if ( OptRunoffSubsurface == 1 ) call RunoffSubSurfaceGroundWater(noahmp)
@@ -412,58 +571,6 @@ contains
     if ( (OptRunoffSubsurface == 3) .or. (OptRunoffSubsurface == 4) .or. (OptRunoffSubsurface == 6) .or. &
          (OptRunoffSubsurface == 7) .or. (OptRunoffSubsurface == 8) ) then
          call RunoffSubSurfaceDrainage(noahmp)
-    endif
-    
-    ! ================================================================
-    ! Peatland: backward excess transfer + final WTD (Bechtold, 2026)
-    !
-    ! After Richards, SoilLiqWater is a flat 1D profile.
-    ! 1. Subtract the forward gap to restore microtopo-integrated values.
-    ! 2. Diagnose final WTD from soil water via FindWaterTable.
-    ! ================================================================
-    if ( OptPeatlandPhysics == 1 ) then
-        ! --- 1. Backward excess transfer: flat 1D → microtopo ---
-        ! Subtract the SAME per-layer gap that was added in the forward
-        ! transfer.  No clamping: the total column water is conserved
-        ! by construction because the same gap is added in the forward
-        ! step and subtracted here.  Individual layers may transiently
-        ! deviate slightly from [0, theta_s] when Richards or runoff
-        ! removal altered the profile between transfers, but this is
-        ! harmless and preserves mass.
-        do LoopInd2 = 1, NumSoilLayer
-           SoilLiqWater(LoopInd2) = SoilLiqWater(LoopInd2) - SoilLiqGap(LoopInd2)
-        enddo
-
-        ! Safety: prevent negative SoilLiqWater (would cause NaN in
-        ! hydraulic property computations at the next timestep).
-        ! Borrow water from the layer below — conservative within the
-        ! column.  This mirrors the existing SoilLiqTmp safety block
-        ! and should rarely if ever activate.
-        do LoopInd2 = 1, NumSoilLayer - 1
-           if (SoilLiqWater(LoopInd2) < 1.0e-4_kind_noahmp) then
-              SoilWatRem = (1.0e-4_kind_noahmp - SoilLiqWater(LoopInd2)) * &
-                           abs(ThicknessSnowSoilLayer(LoopInd2)) * 1000.0_kind_noahmp  ! [mm]
-              SoilLiqWater(LoopInd2) = 1.0e-4_kind_noahmp
-              SoilLiqWater(LoopInd2+1) = SoilLiqWater(LoopInd2+1) - &
-                  SoilWatRem / (abs(ThicknessSnowSoilLayer(LoopInd2+1)) * 1000.0_kind_noahmp)
-           endif
-        enddo
-        if (SoilLiqWater(NumSoilLayer) < 1.0e-4_kind_noahmp) then
-           SoilLiqWater(NumSoilLayer) = 1.0e-4_kind_noahmp  ! last resort
-        endif
-
-        ! --- 2. Diagnose final WTD (microtopo-aware) ---
-        W_soil_peat = 0.0_kind_noahmp
-        do LoopInd2 = 1, NumSoilLayer
-           W_soil_peat = W_soil_peat + &
-               SoilLiqWater(LoopInd2) * abs(ThicknessSnowSoilLayer(LoopInd2))
-        enddo
-        z_wt_peat = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-            bb_peat, z_col_bot_peat, z_wt_peat)
-        WaterTableDepth = max(-z_wt_peat, WaterTableDepthMinPeat)
-
-        ! Update FloodedFraction from final WTD
-        FloodedFraction = FloodedFrac(-WaterTableDepth)
     endif
 
     ! update soil moisture
@@ -485,7 +592,8 @@ contains
     deallocate(MatLeft2  )
     deallocate(MatLeft3  )
     deallocate(SoilLiqTmp)
-    if (allocated(SoilLiqGap)) deallocate(SoilLiqGap)
+
+    endif   ! end if (OptPeatlandPhysics == 1) / else
 
     end associate
 

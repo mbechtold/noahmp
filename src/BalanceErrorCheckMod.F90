@@ -108,6 +108,7 @@ contains
               TranspirationAcc        => noahmp%water%flux%TranspirationAcc          ,& ! inout, accumulated transpiration per soil timestep [mm]
               EvapGroundNetAcc        => noahmp%water%flux%EvapGroundNetAcc          ,& ! inout, accumulated net ground evaporation per soil timestep [mm]
               FSW_change              => noahmp%water%state%FSW_change               ,& ! in,   
+              FSW_peat_error          => noahmp%water%state%FSW_peat_error           ,& ! in, peatland numerical WB error [mm]
               WaterStorageTotEnd      => noahmp%water%state%WaterStorageTotEnd       ,& ! out,   total water storage [mm] at the end
               WaterBalanceError       => noahmp%water%state%WaterBalanceError         & ! out,   water balance error [mm] per time step
              )
@@ -160,6 +161,9 @@ contains
                                               IrrigationRateMicro*1000.0, IrrigationRateFlood*1000.0,              &
                                               EvapCanopyNetAcc, EvapGroundNetAcc, TranspirationAcc, RunoffSurface, &
                                               RunoffSubsurface, WaterTableDepth, TileDrain
+             if ( OptPeatlandPhysics == 1 ) then
+                write(*,'("  FSW_change=",f10.5," FSW_peat_error=",f10.5)') FSW_change, FSW_peat_error
+             endif
              stop "Error: Water budget problem in NoahMP LSM"
           endif
 #endif
