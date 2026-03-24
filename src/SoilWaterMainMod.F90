@@ -441,13 +441,12 @@ contains
               bb_peat, z_col_bot_peat)
 
           ! --- Mean Richards delta for conservation ---
-          ! W_soil_peat is actual soil water from Richards; W_soil_eq_end is
-          ! equilibrium soil water at z_wt_end. The difference, spread uniformly,
-          ! ensures sum(SM_rebased * dz) = W_soil_eq_end exactly, so the total
-          ! water partition (soil vs surface) matches FindWaterTableTotal.
-          mean_delta_peat = (W_soil_peat - W_soil_eq_end) / z_col_bot_peat
+          ! Rebase onto equilibrium(WTD_end) + delta, then compute
+          ! additive correction so sum(SM_rebased * dz) = W_soil_eq_end.
+          ! This ensures the soil/surface water partition is exact.
 
-          ! --- Rebase: SM = EquilibriumSMMicroTopo(WTD_end) + delta - mean_delta ---
+          ! Pass 1: build rebased profile, track total
+          W_soil_check = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
                 d_top_peat = 0.0_kind_noahmp
@@ -460,7 +459,16 @@ contains
 
              SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat) &
-                 + delta_richards - mean_delta_peat
+                 + delta_richards
+
+             W_soil_check = W_soil_check + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+
+          ! Pass 2: additive normalization
+          mean_delta_peat = (W_soil_check - W_soil_eq_end) / z_col_bot_peat
+          do LoopInd1 = 1, NumSoilLayer
+             SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - mean_delta_peat
           enddo
 
           ! --- Saturation overflow cascade ---
