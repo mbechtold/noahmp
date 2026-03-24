@@ -456,7 +456,7 @@ contains
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
 
              SM_eq_flat_tmp = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+                 WTD_begin, thetas_peat, ae_peat, bb_peat)
 
              SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat) &
