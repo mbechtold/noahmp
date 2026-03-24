@@ -26,7 +26,9 @@ module SoilWaterMainMod
                                                  EquilibriumSMFlat,           &
                                                  EquilibriumSMMicroTopo,      &
                                                  FindWaterTable,              &
-                                                 SurfaceWaterStorage
+                                                 FindWaterTableTotal,         &
+                                                 SurfaceWaterStorage,         &
+                                                 SoilWaterStorageMicroTopoLite
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
   use TileDrainageSimpleMod,             only : TileDrainageSimple
@@ -92,6 +94,9 @@ contains
     real(kind=kind_noahmp)            :: TranspSoil_peat               ! soil-portion transpiration [mm/s]
     real(kind=kind_noahmp)            :: RunoffSoil_peat               ! soil-portion runoff [mm]
     real(kind=kind_noahmp)            :: W_soil_check                   ! normalization check [m]
+    real(kind=kind_noahmp)            :: W_total_peat                   ! total water (soil + surface) [m]
+    real(kind=kind_noahmp)            :: Q_net_total                    ! total net flux [m]
+    real(kind=kind_noahmp)            :: W_fsw_begin                    ! surface water at timestep start [m]
     integer                           :: LoopJ                         ! overflow cascade index
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
@@ -190,9 +195,11 @@ contains
     if ( OptRunoffSubsurface == 2 ) call RunoffSubSurfaceEquiWaterTable(noahmp)
     
     ! ================================================================
-    ! Peatland: Diagnose WTD from soil water (column-averaged)
-    ! Then compute Ivanov runoff using the diagnosed WTD.
-    ! (Bechtold, 2026)
+    ! Peatland: Set up parameters and z_wt_begin.
+    ! Use stored WaterTableDepth directly (from restart or previous
+    ! timestep) rather than re-diagnosing from soil water alone.
+    ! This ensures cross-timestep consistency of combined
+    ! soil + surface water tracking.  (Bechtold, 2026)
     ! ================================================================
     if ( OptPeatlandPhysics == 1 ) then
        thetas_peat    = SoilMoistureSat(1)
@@ -207,11 +214,8 @@ contains
               SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
        enddo
 
-       ! Diagnose column-averaged water table from soil storage
-       z_wt_peat = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-           bb_peat, z_col_bot_peat, -WaterTableDepth)
-       WaterTableDepth = -z_wt_peat   ! NO clamp — FindWaterTable handles full range
-       z_wt_begin = z_wt_peat          ! store for FSW_change computation
+       ! Use stored WTD (continuous across timesteps)
+       z_wt_begin = -WaterTableDepth
        WTD_begin  = WaterTableDepth
     endif
 
@@ -253,25 +257,32 @@ contains
 
        ! ================================================================
        ! EQUILIBRIUM PATH: WTD < 0.3 m (Shallow WT, bypass Richards)
+       ! Uses TOTAL water (soil + surface) to find z_wt consistently.
        ! ================================================================
        if ( WTD_begin < WTD_equil_threshold ) then
 
-          ! Soil-side net flux
-          InfilSoil_peat  = InfilRateSfc                                             ! [m/s], already f_soil-scaled
-          EvapSoil_peat   = f_soil * EvapGroundNet                                   ! [mm/s]
-          TranspSoil_peat = f_soil * Transpiration                                   ! [mm/s]
-          RunoffSoil_peat = f_soil * RunoffSubsurface * SoilTimeStep                 ! [mm]
+          ! Surface water storage at timestep begin [m]
+          W_fsw_begin = SurfaceWaterStorage(z_wt_begin)
 
-          ! Update total soil water [m]
-          W_soil_peat = W_soil_peat + InfilSoil_peat * SoilTimeStep                  ! [m] infil
-          W_soil_peat = W_soil_peat - EvapSoil_peat * SoilTimeStep / 1000.0_kind_noahmp   ! [m] evap
-          W_soil_peat = W_soil_peat - TranspSoil_peat * SoilTimeStep / 1000.0_kind_noahmp ! [m] transp
-          W_soil_peat = W_soil_peat - RunoffSoil_peat / 1000.0_kind_noahmp                ! [m] runoff
+          ! Total water (soil + surface) at begin [m]
+          W_total_peat = W_soil_peat + W_fsw_begin
 
-          ! Diagnose new WTD from updated water storage
-          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+          ! Total net flux [m]:  InfilRateSfc + InfilRateSfc_FSW_change = full (pre-split) infiltration
+          Q_net_total = (InfilRateSfc + InfilRateSfc_FSW_change) * SoilTimeStep           &
+                      - EvapGroundNet * SoilTimeStep / 1000.0_kind_noahmp                 &
+                      - Transpiration * SoilTimeStep / 1000.0_kind_noahmp                 &
+                      - RunoffSubsurface * SoilTimeStep / 1000.0_kind_noahmp
+
+          W_total_peat = W_total_peat + Q_net_total
+
+          ! Find z_wt from combined soil+surface storage (exact conservation)
+          z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat, z_wt_begin)
           WaterTableDepth = -z_wt_end
+
+          ! Soil water from the new z_wt [m]
+          W_soil_peat = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat)
 
           ! Set soil moisture to column-averaged hydrostatic equilibrium
           do LoopInd1 = 1, NumSoilLayer
@@ -285,9 +296,7 @@ contains
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat)
           enddo
 
-          ! Normalize equilibrium profile to ensure exact water conservation.
-          ! After fixing the fast-path bug this correction is O(1e-10),
-          ! but it guards against any residual quadrature mismatch.
+          ! Normalize equilibrium profile to match W_soil_peat exactly
           W_soil_check = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              W_soil_check = W_soil_check + &
@@ -299,11 +308,20 @@ contains
              enddo
           endif
 
-          ! Flux-based FSW_change diagnostic reference
+          ! FSW_change: exact from SurfaceWaterStorage [mm]
+          FSW_change = (SurfaceWaterStorage(z_wt_end) - W_fsw_begin) * 1000.0_kind_noahmp
+
+          ! Flux-based diagnostic reference
           FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
                           - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
                           - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
                           - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+
+          ! Peatland numerical water balance error diagnostic
+          FSW_peat_error = FSW_change - FSW_change_flux
+
+          ! Update FloodedFraction from final WTD
+          FloodedFraction = FloodedFrac(z_wt_end)
 
           ! No Richards iterations needed
           DrainSoilBot = 0.0
@@ -442,32 +460,34 @@ contains
                           - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
                           - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
 
+          ! --- Diagnose final WTD from soil water (Richards path) ---
+          W_soil_peat = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_peat = W_soil_peat + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat, z_wt_begin)
+          WaterTableDepth = -z_wt_end
+
+          ! FSW_change: use flux-based estimate (exact for Richards path)
+          FSW_change = FSW_change_flux
+
+          ! Diagnostic: how far the SurfaceWaterStorage-based estimate differs
+          FSW_peat_error = (SurfaceWaterStorage(z_wt_end) - SurfaceWaterStorage(z_wt_begin)) &
+                           * 1000.0_kind_noahmp - FSW_change_flux
+
+          ! Update FloodedFraction from final WTD
+          FloodedFraction = FloodedFrac(z_wt_end)
+
           DrainSoilBot = DrainSoilBot * 1000.0  ! m/s -> mm/s
 
        endif   ! end Richards path
 
        ! ================================================================
-       ! Common final steps: Diagnose final WTD, FSW_change from WTD
+       ! Common final steps: unit conversion, SoilMoisture, deallocation
+       ! (FSW_change, FloodedFraction, WTD already set by each path)
        ! ================================================================
-
-       ! Diagnose final WTD
-       W_soil_peat = 0.0_kind_noahmp
-       do LoopInd1 = 1, NumSoilLayer
-          W_soil_peat = W_soil_peat + &
-              SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
-       enddo
-       z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-           bb_peat, z_col_bot_peat, z_wt_begin)
-       WaterTableDepth = -z_wt_end
-
-       ! FSW_change from WTD-diagnosed surface water storage (primary)
-       FSW_change = (SurfaceWaterStorage(z_wt_end) - SurfaceWaterStorage(z_wt_begin)) * 1000.0_kind_noahmp
-
-       ! Peatland numerical water balance error diagnostic
-       FSW_peat_error = FSW_change - FSW_change_flux
-
-       ! Update FloodedFraction from final WTD
-       FloodedFraction = FloodedFrac(-WaterTableDepth)
 
        ! Accumulated RunoffSurface and RunoffSubsurface [mm per soil timestep]
        RunoffSurface    = RunoffSurface    * SoilTimeStep

@@ -786,6 +786,138 @@ contains
   end function FindWaterTable
 
   !========================================================================
+  ! Find z_wt from TOTAL water storage (soil + surface ponding).
+  !
+  ! W_total(z_wt) = SoilWaterStorageMicroTopoLite(z_wt) + SurfaceWaterStorage(z_wt)
+  !
+  ! This is monotonically increasing and unbounded above (ponded water
+  ! grows linearly above z_trunc).  Safeguarded Newton-Raphson.
+  ! Derivative: dW_total/dz_wt = Sy_soil + FloodedFrac(z_wt)
+  !========================================================================
+  function FindWaterTableTotal(total_water, theta_s, h_e, b_camp, z_col_bot, z_wt_prev) result(z_wt)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: total_water  ! W_soil + W_surface [m]
+    real(kind=kind_noahmp), intent(in) :: theta_s, h_e, b_camp, z_col_bot
+    real(kind=kind_noahmp), intent(in), optional :: z_wt_prev
+    real(kind=kind_noahmp) :: z_wt
+    real(kind=kind_noahmp) :: z_lo, z_hi, z_new, W_lo, W_hi
+    real(kind=kind_noahmp) :: W_val, dW_val, WTD_local, Sy_flat_val, inv_b
+    real(kind=kind_noahmp) :: flood_frac, sqrt2_inv, norm_den, Phi_neg
+    integer :: iter, k
+    integer, parameter :: max_iter = 40
+    real(kind=kind_noahmp), parameter :: tol = 1.0e-6_kind_noahmp
+    real(kind=kind_noahmp), parameter :: warm_margin = 0.5_kind_noahmp
+
+    if (.not. gl_initialized) call InitGaussLegendre()
+
+    inv_b = -1.0_kind_noahmp / b_camp
+    sqrt2_inv = 1.0_kind_noahmp / sqrt(2.0_kind_noahmp)
+
+    ! Precompute truncated-Gaussian CDF helpers
+    norm_den  = erf(z_trunc * sqrt2_inv / sigma_elev)
+    Phi_neg   = 0.5_kind_noahmp * (1.0_kind_noahmp - norm_den)
+
+    ! --- Bracket ---
+    z_lo = -(z_col_bot + z_trunc)
+    ! Above z_trunc FSW grows linearly with slope 1
+    z_hi = z_trunc + max(0.0_kind_noahmp, total_water - theta_s * z_col_bot)
+
+    ! Warm start
+    if (present(z_wt_prev)) then
+       z_lo = max(z_lo, z_wt_prev - warm_margin)
+       z_hi = min(z_hi, z_wt_prev + warm_margin)
+       W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot) + &
+              SurfaceWaterStorage(z_lo)
+       W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot) + &
+              SurfaceWaterStorage(z_hi)
+       if (total_water < W_lo .or. total_water > W_hi) then
+          z_lo = -(z_col_bot + z_trunc)
+          z_hi = z_trunc + max(0.0_kind_noahmp, total_water - theta_s * z_col_bot)
+       endif
+    endif
+
+    W_lo = SoilWaterStorageMicroTopoLite(z_lo, theta_s, h_e, b_camp, z_col_bot) + &
+           SurfaceWaterStorage(z_lo)
+    W_hi = SoilWaterStorageMicroTopoLite(z_hi, theta_s, h_e, b_camp, z_col_bot) + &
+           SurfaceWaterStorage(z_hi)
+
+    if (total_water <= W_lo) then
+       z_wt = z_lo;  return
+    endif
+    if (total_water >= W_hi) then
+       z_wt = z_hi;  return
+    endif
+
+    ! Starting point
+    if (present(z_wt_prev)) then
+       z_wt = max(z_lo, min(z_hi, z_wt_prev))
+    else
+       z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
+    endif
+
+    do iter = 1, max_iter
+       ! --- W_total(z_wt) and dW_total/dz_wt in one pass ---
+       ! Soil part
+       W_val  = 0.0_kind_noahmp
+       dW_val = 0.0_kind_noahmp
+       do k = 1, n_gl
+          WTD_local = z_s_nodes(k) - z_wt
+          if (WTD_local <= 0.0_kind_noahmp) then
+             W_val = W_val + wt_pdf(k) * theta_s * z_col_bot
+          else
+             W_val = W_val + wt_pdf(k) * (theta_s * z_col_bot - &
+                     SingleColumnDeficit(WTD_local, theta_s, h_e, b_camp))
+             if (WTD_local > h_e) then
+                Sy_flat_val = theta_s * (1.0_kind_noahmp - (WTD_local / h_e) ** inv_b)
+             else
+                Sy_flat_val = 0.0_kind_noahmp
+             endif
+             dW_val = dW_val + wt_pdf(k) * Sy_flat_val
+          endif
+       enddo
+
+       ! Surface water part
+       W_val = W_val + SurfaceWaterStorage(z_wt)
+
+       ! dFSW/dz_wt = FloodedFrac(z_wt), computed analytically
+       if (z_wt <= -z_trunc) then
+          flood_frac = 0.0_kind_noahmp
+       elseif (z_wt >= z_trunc) then
+          flood_frac = 1.0_kind_noahmp
+       else
+          flood_frac = (0.5_kind_noahmp * (1.0_kind_noahmp + &
+                        erf(z_wt * sqrt2_inv / sigma_elev)) - Phi_neg) / norm_den
+       endif
+       dW_val = dW_val + flood_frac
+
+       if (abs(W_val - total_water) < tol) return
+
+       ! Update bracket
+       if (W_val < total_water) then
+          z_lo = z_wt
+       else
+          z_hi = z_wt
+       endif
+       if ((z_hi - z_lo) < tol) then
+          z_wt = 0.5_kind_noahmp * (z_lo + z_hi);  return
+       endif
+
+       ! Newton step with safeguard
+       if (dW_val > 1.0e-12_kind_noahmp) then
+          z_new = z_wt + (total_water - W_val) / dW_val
+          if (z_new > z_lo .and. z_new < z_hi) then
+             z_wt = z_new
+          else
+             z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
+          endif
+       else
+          z_wt = 0.5_kind_noahmp * (z_lo + z_hi)
+       endif
+    enddo
+
+  end function FindWaterTableTotal
+
+  !========================================================================
   ! Compute the soil-only water deficit (relative to full saturation)
   ! for a given water table, including microtopography effect.
   ! Used for the WaterTableEquilibrium calculation.
