@@ -440,10 +440,10 @@ contains
           W_soil_eq_end = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat)
 
-          ! --- Backward transfer: map 1D excess back to microtopo ---
-          ! Symmetric with forward: excess_1D = 1D_after - SM_eq_flat(WTD_end)
-          ! SM_micro_new = SM_eq_micro(WTD_end) + excess_1D
-          ! This naturally carries accumulated disequilibrium across timesteps.
+          ! --- Mean Richards delta for conservation ---
+          ! Rebase onto equilibrium(WTD_end) + delta, then compute
+          ! additive correction so sum(SM_rebased * dz) = W_soil_eq_end.
+          ! This ensures the soil/surface water partition is exact.
 
           ! Pass 1: build rebased profile, track total
           W_soil_check = 0.0_kind_noahmp
@@ -455,12 +455,11 @@ contains
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
 
-             SM_eq_flat_tmp = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+             delta_richards = SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
 
              SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat) &
-                 + (SoilLiqWater(LoopInd1) - SM_eq_flat_tmp)
+                 + delta_richards
 
              W_soil_check = W_soil_check + &
                  SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
