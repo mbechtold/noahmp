@@ -97,6 +97,9 @@ contains
     real(kind=kind_noahmp)            :: W_total_peat                   ! total water (soil + surface) [m]
     real(kind=kind_noahmp)            :: Q_net_total                    ! total net flux [m]
     real(kind=kind_noahmp)            :: W_fsw_begin                    ! surface water at timestep start [m]
+    real(kind=kind_noahmp)            :: W_soil_eq_end                  ! equilibrium soil water at z_wt_end [m]
+    real(kind=kind_noahmp)            :: mean_delta_peat                ! mean Richards delta for conservation [m3/m3]
+    real(kind=kind_noahmp)            :: delta_richards                 ! per-layer Richards SM change [m3/m3]
     integer                           :: LoopJ                         ! overflow cascade index
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
@@ -406,10 +409,58 @@ contains
              enddo
           endif
 
-          ! --- Backward transfer: apply 1D changes to column-averaged profile ---
+          ! --- Backward transfer: compute per-layer Richards delta ---
+          ! delta_i = SoilLiqWater_1D_after(i) - SoilLiqWater1D_bef(i)
+          ! This captures the redistribution/ET/infiltration change from Richards.
+          ! We do NOT apply it to SoilLiqWaterOrig yet; instead we rebase below.
+
+          ! Flux-based FSW_change diagnostic reference
+          FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
+                          - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
+                          - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+
+          ! --- Compute total soil water after backward transfer [m] ---
+          W_soil_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
-             SoilLiqWater(LoopInd1) = SoilLiqWaterOrig(LoopInd1) + &
-                 (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))
+             W_soil_peat = W_soil_peat + &
+                 (SoilLiqWaterOrig(LoopInd1) + &
+                  (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))) * &
+                 abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+
+          ! --- Diagnose final WTD from total water (same as equilibrium path) ---
+          W_fsw_begin = SurfaceWaterStorage(z_wt_begin)
+          W_total_peat = W_soil_peat + W_fsw_begin + FSW_change_flux / 1000.0_kind_noahmp
+          z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat, z_wt_begin)
+          WaterTableDepth = -z_wt_end
+
+          ! Equilibrium soil water at the new WTD [m]
+          W_soil_eq_end = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat)
+
+          ! --- Mean Richards delta for conservation ---
+          ! W_soil_peat is actual soil water from Richards; W_soil_eq_end is
+          ! equilibrium soil water at z_wt_end. The difference, spread uniformly,
+          ! ensures sum(SM_rebased * dz) = W_soil_eq_end exactly, so the total
+          ! water partition (soil vs surface) matches FindWaterTableTotal.
+          mean_delta_peat = (W_soil_peat - W_soil_eq_end) / z_col_bot_peat
+
+          ! --- Rebase: SM = EquilibriumSMMicroTopo(WTD_end) + delta - mean_delta ---
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+
+             delta_richards = SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
+
+             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat) &
+                 + delta_richards - mean_delta_peat
           enddo
 
           ! --- Saturation overflow cascade ---
@@ -454,28 +505,11 @@ contains
              SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
           enddo
 
-          ! Flux-based FSW_change diagnostic reference
-          FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
-                          - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
-                          - (1.0_kind_noahmp - f_soil) * Transpiration * SoilTimeStep   &
-                          - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
+          ! FSW_change: exact from SurfaceWaterStorage [mm]
+          FSW_change = (SurfaceWaterStorage(z_wt_end) - W_fsw_begin) * 1000.0_kind_noahmp
 
-          ! --- Diagnose final WTD from soil water (Richards path) ---
-          W_soil_peat = 0.0_kind_noahmp
-          do LoopInd1 = 1, NumSoilLayer
-             W_soil_peat = W_soil_peat + &
-                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
-          enddo
-          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat, z_wt_begin)
-          WaterTableDepth = -z_wt_end
-
-          ! FSW_change: use flux-based estimate (exact for Richards path)
-          FSW_change = FSW_change_flux
-
-          ! Diagnostic: how far the SurfaceWaterStorage-based estimate differs
-          FSW_peat_error = (SurfaceWaterStorage(z_wt_end) - SurfaceWaterStorage(z_wt_begin)) &
-                           * 1000.0_kind_noahmp - FSW_change_flux
+          ! Peatland numerical water balance error diagnostic
+          FSW_peat_error = FSW_change - FSW_change_flux
 
           ! Update FloodedFraction from final WTD
           FloodedFraction = FloodedFrac(z_wt_end)
