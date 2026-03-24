@@ -65,7 +65,8 @@ contains
     ! Compute subsurface runoff using Peatland-specific equation
     RunoffSubsurface = (1.0_dp - SoilImpervFracMax) * BFLOW
     
-    RunoffSubsurface = min(0.0002,RunoffSubSurface)
+    !RunoffSubsurface = min(0.0002,RunoffSubSurface)
+    RunoffSubsurface = min(0.005,RunoffSubSurface)
     
     ! FSW_change is now computed in SoilWaterMainMod from WTD diagnosis (Bechtold, 2026)
 
