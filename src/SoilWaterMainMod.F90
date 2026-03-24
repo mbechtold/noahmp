@@ -91,6 +91,7 @@ contains
     real(kind=kind_noahmp)            :: EvapSoil_peat                 ! soil-portion evaporation [mm/s]
     real(kind=kind_noahmp)            :: TranspSoil_peat               ! soil-portion transpiration [mm/s]
     real(kind=kind_noahmp)            :: RunoffSoil_peat               ! soil-portion runoff [mm]
+    real(kind=kind_noahmp)            :: W_soil_check                   ! normalization check [m]
     integer                           :: LoopJ                         ! overflow cascade index
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
@@ -284,6 +285,20 @@ contains
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat)
           enddo
 
+          ! Normalize equilibrium profile to ensure exact water conservation.
+          ! After fixing the fast-path bug this correction is O(1e-10),
+          ! but it guards against any residual quadrature mismatch.
+          W_soil_check = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_check = W_soil_check + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+          if (abs(W_soil_check) > 1.0e-12_kind_noahmp) then
+             do LoopInd1 = 1, NumSoilLayer
+                SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) * (W_soil_peat / W_soil_check)
+             enddo
+          endif
+
           ! Flux-based FSW_change diagnostic reference
           FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
                           - (1.0_kind_noahmp - f_soil) * EvapGroundNet * SoilTimeStep   &
@@ -292,7 +307,8 @@ contains
 
           ! No Richards iterations needed
           DrainSoilBot = 0.0
-          RunoffSurface = 0.0                ! mm/s; already added to InfilRateSfc
+          ! Route any pre-clipped saturation excess as surface runoff [mm/s]
+          RunoffSurface = SoilSatExcAcc * 1000.0 / SoilTimeStep
 
        ! ================================================================
        ! RICHARDS PATH: WTD >= 0.3 m (Deep WT, full Richards)

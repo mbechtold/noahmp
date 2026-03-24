@@ -988,10 +988,12 @@ contains
     real(kind=kind_noahmp) :: z_wt_local, WTD_local
     integer :: k
 
-    ! Fast path: for layers well below the microtopo zone (d_top > ~2.3*sigma),
-    ! soil_frac ≈ 1 everywhere and the result equals EquilibriumSMFlat.
-    if (d_top > 2.326_kind_noahmp * sigma_elev) then
-       theta_eq = EquilibriumSMFlat(d_top, d_bot, WTD, theta_s, h_e, b_camp)
+    ! Fast path: layer is fully saturated in ALL columns (including the
+    ! highest at z_trunc).  Highest column's local WTD = z_trunc + WTD.
+    ! Saturation boundary: d_sat = WTD_local - h_e = z_trunc + WTD - h_e.
+    ! Layer top must be below that for all columns to be saturated.
+    if (d_top > z_trunc + WTD - h_e) then
+       theta_eq = theta_s
        return
     endif
 
