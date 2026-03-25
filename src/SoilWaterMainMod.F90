@@ -470,13 +470,15 @@ contains
           ! --- Diagnose final WTD from total water (same as equilibrium path) ---
           W_fsw_begin = SurfaceWaterStorage(z_wt_begin)
           W_total_peat = W_soil_peat + W_fsw_begin + FSW_change_flux / 1000.0_kind_noahmp
-          z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+          !z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+          !    bb_peat, z_col_bot_peat, z_wt_begin)
+          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat, z_wt_begin)
           WaterTableDepth = -z_wt_end
 
           ! Equilibrium soil water at the new WTD [m]
-          W_soil_eq_end = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat)
+          ! W_soil_eq_end = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
+          !    bb_peat, z_col_bot_peat)
 
           ! --- Mean Richards delta for conservation ---
           ! Rebase onto equilibrium(WTD_end) + delta, then compute
