@@ -546,16 +546,24 @@ contains
                 excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
                              abs(ThicknessSnowSoilLayer(LoopInd1))
                 SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
-                ! Try layer above
-                if (LoopInd1 > 1 .and. SoilLiqWater(LoopInd1-1) < SoilEffPorosity(LoopInd1-1)) then
-                   space_avail = (SoilEffPorosity(LoopInd1-1) - SoilLiqWater(LoopInd1-1)) * &
-                                 abs(ThicknessSnowSoilLayer(LoopInd1-1))
-                   transfer_vol = min(excess_vol, space_avail)
-                   SoilLiqWater(LoopInd1-1) = SoilLiqWater(LoopInd1-1) + &
-                       transfer_vol / abs(ThicknessSnowSoilLayer(LoopInd1-1))
-                   excess_vol = excess_vol - transfer_vol
+
+                ! Try all layers above, starting with the nearest layer
+                if (LoopInd1 > 1) then
+                   LoopJ = LoopInd1 - 1
+                   do while (LoopJ >= 1 .and. excess_vol > 0.0_kind_noahmp)
+                      space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
+                                    abs(ThicknessSnowSoilLayer(LoopJ))
+                      if (space_avail > 0.0_kind_noahmp) then
+                         transfer_vol = min(excess_vol, space_avail)
+                         SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
+                             transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
+                         excess_vol = excess_vol - transfer_vol
+                      endif
+                      LoopJ = LoopJ - 1
+                   enddo
                 endif
-                ! Try layers below
+
+                ! Try all layers below
                 if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
                    LoopJ = LoopInd1 + 1
                    do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
@@ -570,9 +578,10 @@ contains
                       LoopJ = LoopJ + 1
                    enddo
                 endif
-                ! Remaining excess → surface runoff
+
+                ! Remaining excess -> surface runoff
                 if (excess_vol > 0.0_kind_noahmp) then
-                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                   RunoffSurface = RunoffSurface + excess_vol * 1000.0_kind_noahmp / SoilTimeStep
                    write(*,*) 'DEBUG: RunoffSurface5 = ', RunoffSurface
                 endif
              endif
@@ -658,7 +667,6 @@ contains
     DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
     RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
     RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep  ! m/s -> mm/s
-    write(*,*) 'DEBUG: RunoffSurface8 = ', RunoffSurface
     DrainSoilBot  = DrainSoilBot * 1000.0  ! m/s -> mm/s
 
     ! compute tile drainage
