@@ -375,43 +375,49 @@ contains
             write(*,*) '  Layer', LoopInd1, SoilLiqWaterOrig(LoopInd1)
          enddo
 
-          ! Redistribute water that exceeds porosity to neighbors
-          do LoopInd1 = 1, NumSoilLayer
-             if (SoilLiqWater(LoopInd1) > SoilEffPorosity(LoopInd1)) then
-                excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
-                             abs(ThicknessSnowSoilLayer(LoopInd1))
-                SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
-                ! Try layer above
-                if (LoopInd1 > 1 .and. SoilLiqWater(LoopInd1-1) < SoilEffPorosity(LoopInd1-1)) then
-                   space_avail = (SoilEffPorosity(LoopInd1-1) - SoilLiqWater(LoopInd1-1)) * &
-                                 abs(ThicknessSnowSoilLayer(LoopInd1-1))
-                   transfer_vol = min(excess_vol, space_avail)
-                   SoilLiqWater(LoopInd1-1) = SoilLiqWater(LoopInd1-1) + &
-                       transfer_vol / abs(ThicknessSnowSoilLayer(LoopInd1-1))
-                   excess_vol = excess_vol - transfer_vol
-                endif
-                ! Try layers below
-                if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
-                   LoopJ = LoopInd1 + 1
-                   do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
-                      space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
-                                    abs(ThicknessSnowSoilLayer(LoopJ))
-                      if (space_avail > 0.0_kind_noahmp) then
-                         transfer_vol = min(excess_vol, space_avail)
-                         SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
-                             transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
-                         excess_vol = excess_vol - transfer_vol
-                      endif
-                      LoopJ = LoopJ + 1
-                   enddo
-                endif
-                ! Remaining excess → surface runoff (should be rare)
-                if (excess_vol > 0.0_kind_noahmp) then
-                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
-                   write(*,*) 'DEBUG: RunoffSurface2 = ', RunoffSurface
-                endif
-             endif
-          enddo
+         ! Redistribute water that exceeds porosity to neighbors
+         do LoopInd1 = 1, NumSoilLayer
+            if (SoilLiqWater(LoopInd1) > SoilEffPorosity(LoopInd1)) then
+
+               excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
+                            abs(ThicknessSnowSoilLayer(LoopInd1))
+
+               SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
+
+               ! Try all layers above, starting from the nearest one
+               if (LoopInd1 > 1) then
+                  LoopJ = LoopInd1 - 1
+                  do while (LoopJ >= 1 .and. excess_vol > 0.0_kind_noahmp)
+                     space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
+                                   abs(ThicknessSnowSoilLayer(LoopJ))
+                     if (space_avail > 0.0_kind_noahmp) then
+                        transfer_vol = min(excess_vol, space_avail)
+                        SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
+                            transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
+                        excess_vol = excess_vol - transfer_vol
+                     endif
+                     LoopJ = LoopJ - 1
+                  enddo
+               endif
+
+               ! Try layers below
+               if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
+                  LoopJ = LoopInd1 + 1
+                  do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
+                     space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
+                                   abs(ThicknessSnowSoilLayer(LoopJ))
+                     if (space_avail > 0.0_kind_noahmp) then
+                        transfer_vol = min(excess_vol, space_avail)
+                        SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
+                            transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
+                        excess_vol = excess_vol - transfer_vol
+                     endif
+                     LoopJ = LoopJ + 1
+                  enddo
+               endif
+
+            endif
+         enddo
 
           ! Store 1D profile before Richards for delta computation
           do LoopInd1 = 1, NumSoilLayer
