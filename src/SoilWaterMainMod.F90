@@ -284,10 +284,10 @@ contains
           W_total_peat = W_total_peat + Q_net_total
 
           ! Find z_wt from combined soil+surface storage (exact conservation)
-          !z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+          z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+            bb_peat, z_col_bot_peat, z_wt_begin)
+          !z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
           !    bb_peat, z_col_bot_peat, z_wt_begin)
-          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat, z_wt_begin)
           WaterTableDepth = -z_wt_end
 
           ! Soil water from the new z_wt [m]
