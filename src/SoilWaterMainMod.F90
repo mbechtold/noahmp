@@ -357,12 +357,50 @@ contains
              ! Store original column-averaged profile
              SoilLiqWaterOrig(LoopInd1) = SoilLiqWater(LoopInd1)
 
-             ! Build 1D profile: flat equilibrium + excess
+             ! Build 1D profile: flat equilibrium + excess (unclamped)
              SoilLiqWater(LoopInd1) = SM_eq_flat_tmp + SM_excess_tmp
-             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, &
-                 min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
+             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
+          enddo
 
-             ! Store 1D profile before Richards for delta computation
+          ! Redistribute water that exceeds porosity to neighbors
+          do LoopInd1 = 1, NumSoilLayer
+             if (SoilLiqWater(LoopInd1) > SoilEffPorosity(LoopInd1)) then
+                excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
+                             abs(ThicknessSnowSoilLayer(LoopInd1))
+                SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
+                ! Try layer above
+                if (LoopInd1 > 1 .and. SoilLiqWater(LoopInd1-1) < SoilEffPorosity(LoopInd1-1)) then
+                   space_avail = (SoilEffPorosity(LoopInd1-1) - SoilLiqWater(LoopInd1-1)) * &
+                                 abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   transfer_vol = min(excess_vol, space_avail)
+                   SoilLiqWater(LoopInd1-1) = SoilLiqWater(LoopInd1-1) + &
+                       transfer_vol / abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   excess_vol = excess_vol - transfer_vol
+                endif
+                ! Try layers below
+                if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
+                   LoopJ = LoopInd1 + 1
+                   do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
+                      space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
+                                    abs(ThicknessSnowSoilLayer(LoopJ))
+                      if (space_avail > 0.0_kind_noahmp) then
+                         transfer_vol = min(excess_vol, space_avail)
+                         SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
+                             transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
+                         excess_vol = excess_vol - transfer_vol
+                      endif
+                      LoopJ = LoopJ + 1
+                   enddo
+                endif
+                ! Remaining excess → surface runoff (should be rare)
+                if (excess_vol > 0.0_kind_noahmp) then
+                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                endif
+             endif
+          enddo
+
+          ! Store 1D profile before Richards for delta computation
+          do LoopInd1 = 1, NumSoilLayer
              SoilLiqWater1D_bef(LoopInd1) = SoilLiqWater(LoopInd1)
           enddo
 
@@ -445,21 +483,12 @@ contains
           ! additive correction so sum(SM_rebased * dz) = W_soil_eq_end.
           ! This ensures the soil/surface water partition is exact.
 
-          ! Pass 1: build rebased profile, track total
+          ! Pass 1: build profile as theta_orig + delta_richards, track total
           W_soil_check = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
-             if (LoopInd1 == 1) then
-                d_top_peat = 0.0_kind_noahmp
-             else
-                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
-             endif
-             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-
              delta_richards = SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
 
-             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat) &
-                 + delta_richards
+             SoilLiqWater(LoopInd1) = SoilLiqWaterOrig(LoopInd1) + delta_richards
 
              W_soil_check = W_soil_check + &
                  SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
