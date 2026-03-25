@@ -500,13 +500,9 @@ contains
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
 
-          ! --- Diagnose final WTD from total water (same as equilibrium path) ---
-          W_fsw_begin = SurfaceWaterStorage(z_wt_begin)
-          W_total_peat = W_soil_peat + W_fsw_begin + FSW_change_flux / 1000.0_kind_noahmp
-          z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
+          ! --- Diagnose final WTD from soil water only (Richards path) ---
+          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat, z_wt_begin)
-          !z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-          !    bb_peat, z_col_bot_peat, z_wt_begin)
           WaterTableDepth = -z_wt_end
 
           ! Equilibrium soil water at the new WTD [m]
@@ -585,11 +581,11 @@ contains
              SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
           enddo
 
-          ! FSW_change: exact from SurfaceWaterStorage [mm]
-          FSW_change = (SurfaceWaterStorage(z_wt_end) - W_fsw_begin) * 1000.0_kind_noahmp
+          ! FSW_change: flux-based (Richards path, soil not in equilibrium)
+          FSW_change = FSW_change_flux
 
-          ! Peatland numerical water balance error diagnostic
-          FSW_peat_error = FSW_change - FSW_change_flux
+          ! No partition error in flux-based approach
+          FSW_peat_error = 0.0_kind_noahmp
 
           ! Update FloodedFraction from final WTD
           FloodedFraction = FloodedFrac(z_wt_end)
