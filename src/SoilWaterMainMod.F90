@@ -218,8 +218,12 @@ contains
        enddo
 
        ! Use stored WTD (continuous across timesteps)
-       z_wt_begin = -WaterTableDepth
-       WTD_begin  = WaterTableDepth
+
+       !z_wt_begin = -WaterTableDepth
+       !WTD_begin  = WaterTableDepth
+       z_wt_begin = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+       bb_peat, z_col_bot_peat, -WaterTableDepth)
+       WTD_begin  = -z_wt_begin
     endif
 
     ! Peatland: Ivanov runoff (uses diagnosed WTD)
