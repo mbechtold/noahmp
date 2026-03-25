@@ -334,6 +334,7 @@ contains
           DrainSoilBot = 0.0
           ! Route any pre-clipped saturation excess as surface runoff [mm/s]
           RunoffSurface = SoilSatExcAcc * 1000.0 / SoilTimeStep
+          write(*,*) 'DEBUG: RunoffSurface1 = ', RunoffSurface
 
        ! ================================================================
        ! RICHARDS PATH: WTD >= 0.3 m (Deep WT, full Richards)
@@ -406,6 +407,7 @@ contains
                 ! Remaining excess → surface runoff (should be rare)
                 if (excess_vol > 0.0_kind_noahmp) then
                    RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                   write(*,*) 'DEBUG: RunoffSurface2 = ', RunoffSurface
                 endif
              endif
           enddo
@@ -443,7 +445,9 @@ contains
 
           DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
           RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
+          write(*,*) 'DEBUG: RunoffSurface3 = ', RunoffSurface
           RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
+          write(*,*) 'DEBUG: RunoffSurface4 = ', RunoffSurface
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
           SoilWatConductAcc = 0.0
@@ -562,6 +566,7 @@ contains
                 ! Remaining excess → surface runoff
                 if (excess_vol > 0.0_kind_noahmp) then
                    RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                   write(*,*) 'DEBUG: RunoffSurface5 = ', RunoffSurface
                 endif
              endif
           enddo
@@ -591,6 +596,7 @@ contains
 
        ! Accumulated RunoffSurface and RunoffSubsurface [mm per soil timestep]
        RunoffSurface    = RunoffSurface    * SoilTimeStep
+       write(*,*) 'DEBUG: RunoffSurface6 = ', RunoffSurface
        RunoffSubsurface = RunoffSubsurface * SoilTimeStep
        TileDrain        = 0.0
 
@@ -645,6 +651,7 @@ contains
     DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
     RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
     RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep  ! m/s -> mm/s
+    write(*,*) 'DEBUG: RunoffSurface8 = ', RunoffSurface
     DrainSoilBot  = DrainSoilBot * 1000.0  ! m/s -> mm/s
 
     ! compute tile drainage
