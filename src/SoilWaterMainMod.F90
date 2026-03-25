@@ -495,10 +495,10 @@ contains
           enddo
 
           ! Pass 2: additive normalization
-          mean_delta_peat = (W_soil_check - W_soil_eq_end) / z_col_bot_peat
-          do LoopInd1 = 1, NumSoilLayer
-             SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - mean_delta_peat
-          enddo
+          !mean_delta_peat = (W_soil_check - W_soil_eq_end) / z_col_bot_peat
+          !do LoopInd1 = 1, NumSoilLayer
+          !   SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - mean_delta_peat
+          !enddo
 
           ! --- Saturation overflow cascade ---
           do LoopInd1 = 1, NumSoilLayer
