@@ -176,6 +176,7 @@ contains
                                                    ThicknessSnowSoilLayer(LoopInd1)
        SoilLiqWater(LoopInd1)    = min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1))
     enddo
+    write(*,*) 'DEBUG: SoilSatExcAcc = ', SoilSatExcAcc
 
     ! impermeable fraction due to frozen soil
     do LoopInd1 = 1, NumSoilLayer
@@ -368,11 +369,11 @@ contains
           enddo
 
          ! Debug: Write out SoilLiqWaterOrig and z_wt_begin
-         !write(*,*) 'DEBUG: z_wt_begin = ', z_wt_begin
-         !write(*,*) 'DEBUG: SoilLiqWaterOrig:'
-         !do LoopInd1 = 1, NumSoilLayer
-         !   write(*,*) '  Layer', LoopInd1, SoilLiqWaterOrig(LoopInd1)
-         !enddo
+         write(*,*) 'DEBUG: z_wt_begin = ', z_wt_begin
+         write(*,*) 'DEBUG: SoilLiqWaterOrig:'
+         do LoopInd1 = 1, NumSoilLayer
+            write(*,*) '  Layer', LoopInd1, SoilLiqWaterOrig(LoopInd1)
+         enddo
 
           ! Redistribute water that exceeds porosity to neighbors
           do LoopInd1 = 1, NumSoilLayer
@@ -438,7 +439,9 @@ contains
              endif
              call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
              call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
+                 write(*,*) 'DEBUG: SoilSatExcAccBef = ', SoilSatExcAcc
              SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
+                 write(*,*) 'DEBUG: SoilSatExcAccAfter = ', SoilSatExcAcc
              DrainSoilBotAcc  = DrainSoilBotAcc + DrainSoilBot
              RunoffSurfaceAcc = RunoffSurfaceAcc + RunoffSurface
           enddo
@@ -474,13 +477,13 @@ contains
                           - (1.0_kind_noahmp - f_soil) * RunoffSubsurface * SoilTimeStep
 
          ! Debug: Write out all fluxes used in FSW_change_flux
-         !write(*,*) 'DEBUG: FSW_change_flux terms:'
-         !write(*,*) '  InfilRateSfc_FSW_change = ', InfilRateSfc_FSW_change
-         !write(*,*) '  SoilTimeStep = ', SoilTimeStep
-         !write(*,*) '  f_soil = ', f_soil
-         !write(*,*) '  EvapGroundNet = ', EvapGroundNet
-         !write(*,*) '  Transpiration = ', Transpiration
-         !write(*,*) '  RunoffSubsurface = ', RunoffSubsurface
+         write(*,*) 'DEBUG: FSW_change_flux terms:'
+         write(*,*) '  InfilRateSfc_FSW_change = ', InfilRateSfc_FSW_change
+         write(*,*) '  SoilTimeStep = ', SoilTimeStep
+         write(*,*) '  f_soil = ', f_soil
+         write(*,*) '  EvapGroundNet = ', EvapGroundNet
+         write(*,*) '  Transpiration = ', Transpiration
+         write(*,*) '  RunoffSubsurface = ', RunoffSubsurface
 
           ! --- Compute total soil water after backward transfer [m] ---
           W_soil_peat = 0.0_kind_noahmp
@@ -521,11 +524,11 @@ contains
           enddo
 
          ! Debug: Write out SoilLiqWater after backward transfer and z_wt_end
-         !write(*,*) 'DEBUG: z_wt_end = ', z_wt_end
-         !write(*,*) 'DEBUG: SoilLiqWater after backward transfer:'
-         !do LoopInd1 = 1, NumSoilLayer
-         !   write(*,*) '  Layer', LoopInd1, SoilLiqWater(LoopInd1)
-         !enddo
+         write(*,*) 'DEBUG: z_wt_end = ', z_wt_end
+         write(*,*) 'DEBUG: SoilLiqWater after backward transfer:'
+         do LoopInd1 = 1, NumSoilLayer
+            write(*,*) '  Layer', LoopInd1, SoilLiqWater(LoopInd1)
+         enddo
 
           ! Pass 2: additive normalization
           !mean_delta_peat = (W_soil_check - W_soil_eq_end) / z_col_bot_peat
