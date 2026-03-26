@@ -364,6 +364,8 @@ contains
              SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
                  WaterTableDepth, thetas_peat, ae_peat, bb_peat)
              SM_excess_tmp = SoilLiqWater(LoopInd1) - SM_eq_micro_tmp
+             write(*,*) 'DEBUG: SM_excess_tmp = ', SM_excess_tmp
+             write(*,*) 'DEBUG: SM_eq_flat_tmp = ', SM_eq_flat_tmp
 
              ! Store original column-averaged profile
              SoilLiqWaterOrig(LoopInd1) = SoilLiqWater(LoopInd1)
@@ -497,8 +499,10 @@ contains
                 if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,TimeStepFine)
                 if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,TimeStepFine,InfilSfcAcc)
              endif
+             write(*,*) 'SoilLiqWater, IndIter (before): ',IndIter, SoilLiqWater
              call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
              call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
+             write(*,*) 'SoilLiqWater, IndIter (after): ',IndIter, SoilLiqWater
                  write(*,*) 'DEBUG: SoilSatExcAccBef = ', SoilSatExcAcc
              SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
                  write(*,*) 'DEBUG: SoilSatExcAccAfter = ', SoilSatExcAcc
@@ -581,6 +585,8 @@ contains
              delta_richards = SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
 
              SoilLiqWater(LoopInd1) = SoilLiqWaterOrig(LoopInd1) + delta_richards
+                      write(*,*) 'DEBUG: delta_richards = ', delta_richards
+                      write(*,*) 'DEBUG: SoilLiqWaterOrig(LoopInd1) = ', SoilLiqWaterOrig(LoopInd1)
 
              W_soil_check = W_soil_check + &
                  SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
