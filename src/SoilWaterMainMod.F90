@@ -104,6 +104,10 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer change in forward transfer [m3/m3]
+    integer                           :: NumActiveLayers                ! number of active layers for water extraction
+    real(kind=kind_noahmp), allocatable, dimension(:) :: TranspOrig     ! original TranspWatLossSoilMean [m/s]
+    real(kind=kind_noahmp)            :: TranspInactiveSum              ! sum of transpiration from inactive layers [m/s]
+    real(kind=kind_noahmp)            :: TranspActiveSum                ! sum of transpiration from active layers [m/s]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -144,7 +148,8 @@ contains
               FloodedFraction        => noahmp%water%state%FloodedFraction          ,& ! inout,   flooded fraction [-]
               f_soil                 => noahmp%water%state%f_soil                   ,& ! inout, fraction of flux in and out of soil [-]
               SoilLiqWaterMin        => noahmp%water%state%SoilLiqWaterMin         ,& ! out,   minimum soil liquid water content [m3/m3]
-              DepthSoilLayer         => noahmp%config%domain%DepthSoilLayer          & ! in,    depth [m] of layer-bottom from soil surface
+              DepthSoilLayer         => noahmp%config%domain%DepthSoilLayer         ,& ! in,    depth [m] of layer-bottom from soil surface
+              TranspWatLossSoilMean  => noahmp%water%flux%TranspWatLossSoilMean      & ! inout, mean transpiration water loss from soil layers [m/s]
              )
 ! ----------------------------------------------------------------------
 
@@ -285,9 +290,7 @@ contains
 
           ! Find z_wt from combined soil+surface storage (exact conservation)
           z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
-            bb_peat, z_col_bot_peat, z_wt_begin)
-          !z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-          !    bb_peat, z_col_bot_peat, z_wt_begin)
+              bb_peat, z_col_bot_peat, z_wt_begin)
           WaterTableDepth = -z_wt_end
 
           ! Soil water from the new z_wt [m]
@@ -433,6 +436,55 @@ contains
           endif
           TimeStepFine = SoilTimeStep / NumIterSoilWat
 
+          ! --- Redistribute transpiration to active layers only ---
+          ! WTD 0.3–0.5: layer 1 only; WTD > 0.5: layers 1+2
+          if (WTD_begin <= 0.5_kind_noahmp) then
+             NumActiveLayers = 1
+          else
+             NumActiveLayers = 2
+          endif
+
+          if (.not. allocated(TranspOrig)) allocate(TranspOrig(1:NumSoilLayer))
+          do LoopInd1 = 1, NumSoilLayer
+             TranspOrig(LoopInd1) = TranspWatLossSoilMean(LoopInd1)
+          enddo
+
+          ! Sum transpiration from inactive and active layers
+          TranspInactiveSum = 0.0_kind_noahmp
+          do LoopInd1 = NumActiveLayers + 1, NumSoilLayer
+             TranspInactiveSum = TranspInactiveSum + TranspWatLossSoilMean(LoopInd1)
+          enddo
+          TranspActiveSum = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumActiveLayers
+             TranspActiveSum = TranspActiveSum + TranspWatLossSoilMean(LoopInd1)
+          enddo
+
+          ! Redistribute inactive transpiration proportionally to active layers
+          if (TranspInactiveSum > 0.0_kind_noahmp) then
+             if (TranspActiveSum > 0.0_kind_noahmp) then
+                do LoopInd1 = 1, NumActiveLayers
+                   TranspWatLossSoilMean(LoopInd1) = TranspWatLossSoilMean(LoopInd1) + &
+                       TranspInactiveSum * (TranspOrig(LoopInd1) / TranspActiveSum)
+                enddo
+             else
+                ! Distribute equally among active layers
+                do LoopInd1 = 1, NumActiveLayers
+                   TranspWatLossSoilMean(LoopInd1) = TranspWatLossSoilMean(LoopInd1) + &
+                       TranspInactiveSum / real(NumActiveLayers, kind_noahmp)
+                enddo
+             endif
+             ! Zero out inactive layers
+             do LoopInd1 = NumActiveLayers + 1, NumSoilLayer
+                TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+             enddo
+          endif
+
+          ! Debug: transpiration extraction per layer [mm per soil timestep]
+          write(*,*) 'DEBUG PEAT Transpiration [mm] per layer (after redistribution):'
+          do LoopInd1 = 1, NumSoilLayer
+             write(*,*) '  Layer', LoopInd1, TranspWatLossSoilMean(LoopInd1) * SoilTimeStep
+          enddo
+
           ! --- Solve soil moisture via Richards ---
           InfilSfcAcc      = 1.0e-06
           DrainSoilBotAcc  = 0.0
@@ -460,18 +512,25 @@ contains
           RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
           write(*,*) 'DEBUG: RunoffSurface4 = ', RunoffSurface
 
-          ! --- Remove f_soil fraction of subsurface runoff from soil ---
+          ! --- Remove f_soil fraction of subsurface runoff from active layers only ---
           SoilWatConductAcc = 0.0
-          do LoopInd1 = 1, NumSoilLayer
+          do LoopInd1 = 1, NumActiveLayers
              SoilWatConductAcc = SoilWatConductAcc + SoilWatConductivity(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1)
           enddo
           if (SoilWatConductAcc > 0.0) then
-             do LoopInd1 = 1, NumSoilLayer
+             do LoopInd1 = 1, NumActiveLayers
                 WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
                              (SoilWatConductivity(LoopInd1)*ThicknessSnowSoilLayer(LoopInd1)) / SoilWatConductAcc
                 SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (ThicknessSnowSoilLayer(LoopInd1)*1000.0)
+                write(*,*) 'DEBUG PEAT WaterRemove [mm] Layer', LoopInd1, WaterRemove
              enddo
           endif
+
+          ! --- Restore original transpiration profile ---
+          do LoopInd1 = 1, NumSoilLayer
+             TranspWatLossSoilMean(LoopInd1) = TranspOrig(LoopInd1)
+          enddo
+          if (allocated(TranspOrig)) deallocate(TranspOrig)
 
           ! --- Backward transfer: compute per-layer Richards delta ---
           ! delta_i = SoilLiqWater_1D_after(i) - SoilLiqWater1D_bef(i)
@@ -546,24 +605,16 @@ contains
                 excess_vol = (SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
                              abs(ThicknessSnowSoilLayer(LoopInd1))
                 SoilLiqWater(LoopInd1) = SoilEffPorosity(LoopInd1)
-
-                ! Try all layers above, starting with the nearest layer
-                if (LoopInd1 > 1) then
-                   LoopJ = LoopInd1 - 1
-                   do while (LoopJ >= 1 .and. excess_vol > 0.0_kind_noahmp)
-                      space_avail = (SoilEffPorosity(LoopJ) - SoilLiqWater(LoopJ)) * &
-                                    abs(ThicknessSnowSoilLayer(LoopJ))
-                      if (space_avail > 0.0_kind_noahmp) then
-                         transfer_vol = min(excess_vol, space_avail)
-                         SoilLiqWater(LoopJ) = SoilLiqWater(LoopJ) + &
-                             transfer_vol / abs(ThicknessSnowSoilLayer(LoopJ))
-                         excess_vol = excess_vol - transfer_vol
-                      endif
-                      LoopJ = LoopJ - 1
-                   enddo
+                ! Try layer above
+                if (LoopInd1 > 1 .and. SoilLiqWater(LoopInd1-1) < SoilEffPorosity(LoopInd1-1)) then
+                   space_avail = (SoilEffPorosity(LoopInd1-1) - SoilLiqWater(LoopInd1-1)) * &
+                                 abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   transfer_vol = min(excess_vol, space_avail)
+                   SoilLiqWater(LoopInd1-1) = SoilLiqWater(LoopInd1-1) + &
+                       transfer_vol / abs(ThicknessSnowSoilLayer(LoopInd1-1))
+                   excess_vol = excess_vol - transfer_vol
                 endif
-
-                ! Try all layers below
+                ! Try layers below
                 if (excess_vol > 0.0_kind_noahmp .and. LoopInd1 < NumSoilLayer) then
                    LoopJ = LoopInd1 + 1
                    do while (LoopJ <= NumSoilLayer .and. excess_vol > 0.0_kind_noahmp)
@@ -578,10 +629,9 @@ contains
                       LoopJ = LoopJ + 1
                    enddo
                 endif
-
-                ! Remaining excess -> surface runoff
+                ! Remaining excess → surface runoff
                 if (excess_vol > 0.0_kind_noahmp) then
-                   RunoffSurface = RunoffSurface + excess_vol * 1000.0_kind_noahmp / SoilTimeStep
+                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
                    write(*,*) 'DEBUG: RunoffSurface5 = ', RunoffSurface
                 endif
              endif
@@ -625,6 +675,7 @@ contains
        if (allocated(SoilLiqWaterOrig))   deallocate(SoilLiqWaterOrig)
        if (allocated(SoilLiqWater1D_bef)) deallocate(SoilLiqWater1D_bef)
        if (allocated(SoilLiqGap))         deallocate(SoilLiqGap)
+       if (allocated(TranspOrig))         deallocate(TranspOrig)
 
     else   ! non-peatland path
 
@@ -667,6 +718,7 @@ contains
     DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
     RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
     RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep  ! m/s -> mm/s
+    write(*,*) 'DEBUG: RunoffSurface8 = ', RunoffSurface
     DrainSoilBot  = DrainSoilBot * 1000.0  ! m/s -> mm/s
 
     ! compute tile drainage
