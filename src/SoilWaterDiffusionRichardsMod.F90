@@ -53,6 +53,7 @@ contains
               OptRunoffSubsurface       => noahmp%config%nmlist%OptRunoffSubsurface       ,& ! in,  options for drainage and subsurface runoff
               OptPeatlandPhysics        => noahmp%config%nmlist%OptPeatlandPhysics        ,& ! in,  options for peatland physics
               SoilDrainSlope            => noahmp%water%param%SoilDrainSlope              ,& ! in,  slope index for soil drainage
+              SoilMatPotentialSat       => noahmp%water%param%SoilMatPotentialSat          ,& ! in,  saturated matric potential [m]
               InfilRateSfc              => noahmp%water%flux%InfilRateSfc                 ,& ! in,  infiltration rate at surface [m/s]
               EvapSoilSfcLiqMean        => noahmp%water%flux%EvapSoilSfcLiqMean           ,& ! in,  mean evaporation from soil surface [m/s]
               TranspWatLossSoilMean     => noahmp%water%flux%TranspWatLossSoilMean        ,& ! in,  mean transpiration water loss from soil layers [m/s]
@@ -209,10 +210,12 @@ contains
     ! This prevents the theta-based discretization from generating
     ! spurious gravitational flux across the poorly-resolved WT boundary.
     if ( OptPeatlandPhysics == 1 ) then
-       ! Find topmost layer whose top is at or below WTD
+       ! Find topmost layer whose top is at or below WTD (including capillary fringe).
+       ! A layer stays decoupled while its top + air entry value >= WTD, because
+       ! the capillary fringe keeps it fully saturated.
        SatTopInd = NumSoilLayer + 1
        do LoopInd = NumSoilLayer, 2, -1
-          if ( abs(DepthSoilLayer(LoopInd-1)) >= WaterTableDepth ) then
+          if ( abs(DepthSoilLayer(LoopInd-1)) + abs(SoilMatPotentialSat(1)) >= WaterTableDepth ) then
              SatTopInd = LoopInd
           else
              exit

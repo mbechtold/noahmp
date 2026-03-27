@@ -465,10 +465,10 @@ contains
           write(*,*) 'DEBUG: RunoffSurface4 = ', RunoffSurface
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
-          ! Exclude fully-saturated layers (below WT) from K-weighted removal
+          ! Exclude fully-saturated layers (below WT + capillary fringe) from K-weighted removal
           SatTopInd = NumSoilLayer + 1
           do LoopInd1 = NumSoilLayer, 2, -1
-             if ( abs(DepthSoilLayer(LoopInd1-1)) >= WaterTableDepth ) then
+             if ( abs(DepthSoilLayer(LoopInd1-1)) + ae_peat >= WaterTableDepth ) then
                 SatTopInd = LoopInd1
              else
                 exit
@@ -559,6 +559,46 @@ contains
           !do LoopInd1 = 1, NumSoilLayer
           !   SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - mean_delta_peat
           !enddo
+
+          ! --- Saturated-layer equilibrium override ---
+          ! Layers fully below the new WTD (+ capillary fringe) were decoupled
+          ! from Richards (delta_richards = 0), so their SM would stay frozen
+          ! at the previous timestep value. Override with the current equilibrium
+          ! profile so they track WTD changes smoothly (consistent with the
+          ! equilibrium path behavior for WTD < 0.3).
+          SatTopInd = NumSoilLayer + 1
+          do LoopInd1 = NumSoilLayer, 2, -1
+             if ( abs(DepthSoilLayer(LoopInd1-1)) + ae_peat >= WaterTableDepth ) then
+                SatTopInd = LoopInd1
+             else
+                exit
+             endif
+          enddo
+          if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
+             SatTopInd = 1
+          endif
+          do LoopInd1 = SatTopInd, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+          enddo
+
+          ! --- Water balance: re-diagnose WTD after equilibrium override ---
+          ! The override changed saturated-layer SM, so total soil water
+          ! and the consistent WTD must be recomputed.
+          W_soil_peat = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_peat = W_soil_peat + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat, z_wt_end)
+          WaterTableDepth = -z_wt_end
 
           ! --- Saturation overflow cascade ---
           do LoopInd1 = 1, NumSoilLayer
