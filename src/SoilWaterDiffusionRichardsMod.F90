@@ -42,6 +42,8 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilWaterGrad               ! temporary soil moisture vertical gradient
     real(kind=kind_noahmp), allocatable, dimension(:) :: WaterExcess                 ! temporary excess water flux
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureTmp             ! temporary soil moisture
+    real(kind=kind_noahmp)                            :: KMin                        ! minimum K across layers for capping
+    real(kind=kind_noahmp)                            :: DMin                        ! minimum D across layers for capping
 
 ! --------------------------------------------------------------------
     associate(                                                                             &
@@ -103,6 +105,25 @@ contains
        enddo
        if ( OptRunoffSubsurface == 5 ) &
           SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
+    endif
+
+    ! Peatland: limit total vertical range in K and D to one order
+    ! of magnitude (factor 10) from the driest to the wettest layer.
+    ! With Campbell (b=7.4), K ~ theta^17.8 and D ~ theta^9.4, so K
+    ! varies more steeply than D; capping both at 10x is sufficient.
+    if ( OptPeatlandPhysics == 1 ) then
+       KMin = minval(SoilWatConductivity(1:NumSoilLayer))
+       if ( KMin > 0.0 ) then
+          do LoopInd = 1, NumSoilLayer
+             SoilWatConductivity(LoopInd) = min(SoilWatConductivity(LoopInd), KMin * 10.0)
+          enddo
+       endif
+       DMin = minval(SoilWatDiffusivity(1:NumSoilLayer))
+       if ( DMin > 0.0 ) then
+          do LoopInd = 1, NumSoilLayer
+             SoilWatDiffusivity(LoopInd) = min(SoilWatDiffusivity(LoopInd), DMin * 10.0)
+          enddo
+       endif
     endif
 
     ! compute gradient and flux of soil water diffusion terms
