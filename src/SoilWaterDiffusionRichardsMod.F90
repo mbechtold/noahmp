@@ -43,7 +43,7 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: WaterExcess                 ! temporary excess water flux
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureTmp             ! temporary soil moisture
     real(kind=kind_noahmp)                            :: KMin                        ! minimum K across layers for capping
-    real(kind=kind_noahmp)                            :: DMin                        ! minimum D across layers for capping
+    real(kind=kind_noahmp)                            :: KScale                      ! per-layer scaling factor for K and D
 
 ! --------------------------------------------------------------------
     associate(                                                                             &
@@ -107,21 +107,16 @@ contains
           SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
     endif
 
-    ! Peatland: limit total vertical range in K and D to one order
-    ! of magnitude (factor 10) from the driest to the wettest layer.
-    ! With Campbell (b=7.4), K ~ theta^17.8 and D ~ theta^9.4, so K
-    ! varies more steeply than D; capping both at 10x is sufficient.
+    ! Peatland: limit vertical K spread to factor 3 (driest to wettest).
+    ! Use the SAME scale factor for D to preserve the K/D ratio per layer,
+    ! so that equilibrium flux D*grad(theta)+K = 0 remains balanced.
     if ( OptPeatlandPhysics == 1 ) then
        KMin = minval(SoilWatConductivity(1:NumSoilLayer))
        if ( KMin > 0.0 ) then
           do LoopInd = 1, NumSoilLayer
-             SoilWatConductivity(LoopInd) = min(SoilWatConductivity(LoopInd), KMin * 10.0)
-          enddo
-       endif
-       DMin = minval(SoilWatDiffusivity(1:NumSoilLayer))
-       if ( DMin > 0.0 ) then
-          do LoopInd = 1, NumSoilLayer
-             SoilWatDiffusivity(LoopInd) = min(SoilWatDiffusivity(LoopInd), DMin * 10.0)
+             KScale = min(1.0_kind_noahmp, KMin * 3.0_kind_noahmp / SoilWatConductivity(LoopInd))
+             SoilWatConductivity(LoopInd) = SoilWatConductivity(LoopInd) * KScale
+             SoilWatDiffusivity(LoopInd)  = SoilWatDiffusivity(LoopInd)  * KScale
           enddo
        endif
     endif
