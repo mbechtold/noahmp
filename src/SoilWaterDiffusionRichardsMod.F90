@@ -9,7 +9,6 @@ module SoilWaterDiffusionRichardsMod
   use NoahmpVarType
   use ConstantDefineMod
   use SoilHydraulicPropertyMod
-  use PeatMicroTopoMod, only: EquilibriumSMFlat
 
 
   implicit none
@@ -35,6 +34,8 @@ contains
 
 ! local variable
     integer                                           :: LoopInd                     ! loop index
+    integer                                           :: SatTopInd                   ! topmost fully-saturated layer index
+    integer                                           :: TransInd                    ! transitional layer index (contains WT)
     real(kind=kind_noahmp)                            :: DepthSnowSoilTmp            ! temporary snow/soil layer depth [m]
     real(kind=kind_noahmp)                            :: SoilMoistTmpToWT            ! temporary soil moisture between bottom of the soil and water table
     real(kind=kind_noahmp)                            :: SoilMoistBotTmp             ! temporary soil moisture below bottom to calculate flux
@@ -43,17 +44,6 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilWaterGrad               ! temporary soil moisture vertical gradient
     real(kind=kind_noahmp), allocatable, dimension(:) :: WaterExcess                 ! temporary excess water flux
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureTmp             ! temporary soil moisture
-    real(kind=kind_noahmp)                            :: KMin                        ! minimum K across layers for capping
-    real(kind=kind_noahmp)                            :: KScale                      ! per-layer scaling factor for K and D
-    real(kind=kind_noahmp)                            :: KMinEq                      ! minimum equilibrium K for capping
-    real(kind=kind_noahmp)                            :: KScaleEq                    ! equilibrium scale factor
-    real(kind=kind_noahmp)                            :: d_top_tmp                   ! top depth of layer [m]
-    real(kind=kind_noahmp)                            :: d_bot_tmp                   ! bottom depth of layer [m]
-    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureEq              ! equilibrium soil moisture [m3/m3]
-    real(kind=kind_noahmp), allocatable, dimension(:) :: KConductEq                  ! equilibrium hydraulic conductivity [m/s]
-    real(kind=kind_noahmp), allocatable, dimension(:) :: DiffusEq                    ! equilibrium diffusivity [m2/s]
-    real(kind=kind_noahmp), allocatable, dimension(:) :: GradEq                      ! equilibrium SM gradient
-    real(kind=kind_noahmp), allocatable, dimension(:) :: WExcessEq                   ! equilibrium WaterExcess (discretization residual)
 
 ! --------------------------------------------------------------------
     associate(                                                                             &
@@ -63,9 +53,6 @@ contains
               OptRunoffSubsurface       => noahmp%config%nmlist%OptRunoffSubsurface       ,& ! in,  options for drainage and subsurface runoff
               OptPeatlandPhysics        => noahmp%config%nmlist%OptPeatlandPhysics        ,& ! in,  options for peatland physics
               SoilDrainSlope            => noahmp%water%param%SoilDrainSlope              ,& ! in,  slope index for soil drainage
-              SoilMoistureSat           => noahmp%water%param%SoilMoistureSat             ,& ! in,  saturated soil moisture [m3/m3]
-              SoilMatPotentialSat       => noahmp%water%param%SoilMatPotentialSat          ,& ! in,  saturated matric potential [m]
-              SoilExpCoeffB             => noahmp%water%param%SoilExpCoeffB                ,& ! in,  Campbell b exponent [-]
               InfilRateSfc              => noahmp%water%flux%InfilRateSfc                 ,& ! in,  infiltration rate at surface [m/s]
               EvapSoilSfcLiqMean        => noahmp%water%flux%EvapSoilSfcLiqMean           ,& ! in,  mean evaporation from soil surface [m/s]
               TranspWatLossSoilMean     => noahmp%water%flux%TranspWatLossSoilMean        ,& ! in,  mean transpiration water loss from soil layers [m/s]
@@ -118,81 +105,6 @@ contains
        enddo
        if ( OptRunoffSubsurface == 5 ) &
           SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
-    endif
-
-    ! Peatland: limit vertical K spread to factor 3 (driest to wettest).
-    ! Use the SAME scale factor for D to preserve the K/D ratio per layer,
-    ! so that equilibrium flux D*grad(theta)+K = 0 remains balanced.
-    if ( OptPeatlandPhysics == 1 ) then
-       KMin = minval(SoilWatConductivity(1:NumSoilLayer))
-       if ( KMin > 0.0 ) then
-          do LoopInd = 1, NumSoilLayer
-             KScale = min(1.0_kind_noahmp, KMin * 3.0_kind_noahmp / SoilWatConductivity(LoopInd))
-             SoilWatConductivity(LoopInd) = SoilWatConductivity(LoopInd) * KScale
-             SoilWatDiffusivity(LoopInd)  = SoilWatDiffusivity(LoopInd)  * KScale
-          enddo
-       endif
-    endif
-
-    ! Peatland: compute equilibrium flux residual for discretization-error correction.
-    ! At hydrostatic equilibrium the continuous flux D*dtheta/dz + K = 0, but the
-    ! coarse 4-layer discretization + K/D capping produce a non-zero WaterExcess
-    ! even at equilibrium. We compute that spurious residual and subtract it later.
-    if ( OptPeatlandPhysics == 1 ) then
-       if (.not. allocated(SoilMoistureEq)) allocate(SoilMoistureEq(1:NumSoilLayer))
-       if (.not. allocated(KConductEq))     allocate(KConductEq    (1:NumSoilLayer))
-       if (.not. allocated(DiffusEq))       allocate(DiffusEq      (1:NumSoilLayer))
-       if (.not. allocated(GradEq))         allocate(GradEq        (1:NumSoilLayer))
-       if (.not. allocated(WExcessEq))      allocate(WExcessEq     (1:NumSoilLayer))
-
-       ! Equilibrium SM per layer from Campbell retention curve
-       do LoopInd = 1, NumSoilLayer
-          if (LoopInd == 1) then
-             d_top_tmp = 0.0_kind_noahmp
-          else
-             d_top_tmp = -DepthSoilLayer(LoopInd - 1)
-          endif
-          d_bot_tmp = -DepthSoilLayer(LoopInd)
-          SoilMoistureEq(LoopInd) = EquilibriumSMFlat(d_top_tmp, d_bot_tmp, &
-              -WaterTableDepth, SoilMoistureSat(1), abs(SoilMatPotentialSat(1)), SoilExpCoeffB(1))
-       enddo
-
-       ! Equilibrium K and D per layer (same function as actual computation)
-       do LoopInd = 1, NumSoilLayer
-          if ( OptSoilPermeabilityFrozen == 1 ) then
-             call SoilDiffusivityConductivityOpt1(noahmp, DiffusEq(LoopInd), KConductEq(LoopInd), &
-                                                  SoilMoistureEq(LoopInd), SoilImpervFrac(LoopInd), LoopInd)
-          else
-             call SoilDiffusivityConductivityOpt2(noahmp, DiffusEq(LoopInd), KConductEq(LoopInd), &
-                                                  SoilMoistureEq(LoopInd), SoilIceMax, LoopInd)
-          endif
-       enddo
-
-       ! Apply same K/D capping to equilibrium values
-       KMinEq = minval(KConductEq(1:NumSoilLayer))
-       if ( KMinEq > 0.0 ) then
-          do LoopInd = 1, NumSoilLayer
-             KScaleEq = min(1.0_kind_noahmp, KMinEq * 3.0_kind_noahmp / KConductEq(LoopInd))
-             KConductEq(LoopInd) = KConductEq(LoopInd) * KScaleEq
-             DiffusEq(LoopInd)   = DiffusEq(LoopInd)   * KScaleEq
-          enddo
-       endif
-
-       ! Equilibrium gradients and flux residual (no sinks, DrainSoilBot=0)
-       do LoopInd = 1, NumSoilLayer
-          if ( LoopInd == 1 ) then
-             GradEq(LoopInd) = 2.0 * (SoilMoistureEq(LoopInd) - SoilMoistureEq(LoopInd+1)) / &
-                               (-DepthSoilLayer(LoopInd+1))
-             WExcessEq(LoopInd) = DiffusEq(LoopInd)*GradEq(LoopInd) + KConductEq(LoopInd)
-          else if ( LoopInd < NumSoilLayer ) then
-             GradEq(LoopInd) = 2.0 * (SoilMoistureEq(LoopInd) - SoilMoistureEq(LoopInd+1)) / &
-                               (DepthSoilLayer(LoopInd-1) - DepthSoilLayer(LoopInd+1))
-             WExcessEq(LoopInd) = DiffusEq(LoopInd)*GradEq(LoopInd) + KConductEq(LoopInd) - &
-                                  DiffusEq(LoopInd-1)*GradEq(LoopInd-1) - KConductEq(LoopInd-1)
-          else
-             WExcessEq(LoopInd) = -(DiffusEq(LoopInd-1)*GradEq(LoopInd-1)) - KConductEq(LoopInd-1)
-          endif
-       enddo
     endif
 
     ! compute gradient and flux of soil water diffusion terms
@@ -273,13 +185,6 @@ contains
        endif
     enddo
 
-    ! Peatland: subtract equilibrium flux residual (discretization error correction)
-    if ( OptPeatlandPhysics == 1 .and. f_soil >= 0.000001_kind_noahmp ) then
-       do LoopInd = 1, NumSoilLayer
-          WaterExcess(LoopInd) = WaterExcess(LoopInd) - WExcessEq(LoopInd)
-       enddo
-    endif
-
     ! prepare the matrix coefficients for the tri-diagonal matrix
     do LoopInd = 1, NumSoilLayer
        if ( LoopInd == 1 ) then
@@ -298,17 +203,62 @@ contains
        MatRight(LoopInd) = WaterExcess(LoopInd) / (-SoilThickTmp(LoopInd))
     enddo
 
+    ! Peatland: decouple saturated zone from Richards domain.
+    ! Layers fully below the tracked water table should not participate
+    ! in unsaturated Richards flux — they are in hydrostatic equilibrium.
+    ! This prevents the theta-based discretization from generating
+    ! spurious gravitational flux across the poorly-resolved WT boundary.
+    if ( OptPeatlandPhysics == 1 ) then
+       ! Find topmost layer whose top is at or below WTD
+       SatTopInd = NumSoilLayer + 1
+       do LoopInd = NumSoilLayer, 2, -1
+          if ( abs(DepthSoilLayer(LoopInd-1)) >= WaterTableDepth ) then
+             SatTopInd = LoopInd
+          else
+             exit
+          endif
+       enddo
+       ! Also check layer 1: if WTD <= 0 (surface ponding), all layers saturated
+       if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
+          SatTopInd = 1
+       endif
+
+       if ( SatTopInd <= NumSoilLayer ) then
+          TransInd = SatTopInd - 1
+
+          ! --- Transitional layer: remove bottom flux, keep top flux + sinks ---
+          if ( TransInd >= 1 ) then
+             if ( f_soil < 0.000001_kind_noahmp ) then
+                WaterExcess(TransInd) = 0.0
+             else if ( TransInd == 1 ) then
+                WaterExcess(TransInd) = -InfilRateSfc &
+                    + f_soil*TranspWatLossSoilMean(TransInd) + f_soil*EvapSoilSfcLiqMean
+             else
+                WaterExcess(TransInd) = -(SoilWatDiffusivity(TransInd-1)*SoilWaterGrad(TransInd-1)) &
+                    - SoilWatConductivity(TransInd-1) + f_soil*TranspWatLossSoilMean(TransInd)
+             endif
+             MatRight(TransInd) = WaterExcess(TransInd) / (-SoilThickTmp(TransInd))
+             MatLeft3(TransInd) = 0.0
+             MatLeft2(TransInd) = -(MatLeft1(TransInd) + MatLeft3(TransInd))
+          endif
+
+          ! --- Saturated layers: completely inert (no flux, no transpiration) ---
+          do LoopInd = SatTopInd, NumSoilLayer
+             WaterExcess(LoopInd) = 0.0
+             MatRight(LoopInd)    = 0.0
+             MatLeft1(LoopInd)    = 0.0
+             MatLeft2(LoopInd)    = 0.0
+             MatLeft3(LoopInd)    = 0.0
+          enddo
+       endif
+    endif
+
     ! deallocate local arrays to avoid memory leaks
     deallocate(DepthSnowSoilInv)
     deallocate(SoilThickTmp    )
     deallocate(SoilWaterGrad   )
     deallocate(WaterExcess     )
     deallocate(SoilMoistureTmp )
-    if (allocated(SoilMoistureEq)) deallocate(SoilMoistureEq)
-    if (allocated(KConductEq))     deallocate(KConductEq)
-    if (allocated(DiffusEq))       deallocate(DiffusEq)
-    if (allocated(GradEq))         deallocate(GradEq)
-    if (allocated(WExcessEq))      deallocate(WExcessEq)
 
     end associate
 

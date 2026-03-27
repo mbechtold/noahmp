@@ -101,6 +101,7 @@ contains
     real(kind=kind_noahmp)            :: mean_delta_peat                ! mean Richards delta for conservation [m3/m3]
     real(kind=kind_noahmp)            :: delta_richards                 ! per-layer Richards SM change [m3/m3]
     integer                           :: LoopJ                         ! overflow cascade index
+    integer                           :: SatTopInd                      ! topmost fully-saturated layer index
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer change in forward transfer [m3/m3]
@@ -464,12 +465,25 @@ contains
           write(*,*) 'DEBUG: RunoffSurface4 = ', RunoffSurface
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
+          ! Exclude fully-saturated layers (below WT) from K-weighted removal
+          SatTopInd = NumSoilLayer + 1
+          do LoopInd1 = NumSoilLayer, 2, -1
+             if ( abs(DepthSoilLayer(LoopInd1-1)) >= WaterTableDepth ) then
+                SatTopInd = LoopInd1
+             else
+                exit
+             endif
+          enddo
+          if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
+             SatTopInd = 1
+          endif
+
           SoilWatConductAcc = 0.0
-          do LoopInd1 = 1, NumSoilLayer
+          do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
              SoilWatConductAcc = SoilWatConductAcc + SoilWatConductivity(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1)
           enddo
           if (SoilWatConductAcc > 0.0) then
-             do LoopInd1 = 1, NumSoilLayer
+             do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
                 WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
                              (SoilWatConductivity(LoopInd1)*ThicknessSnowSoilLayer(LoopInd1)) / SoilWatConductAcc
                 SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (ThicknessSnowSoilLayer(LoopInd1)*1000.0)
