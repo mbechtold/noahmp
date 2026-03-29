@@ -1144,6 +1144,125 @@ contains
   end function EquilibriumSMMicroTopo
 
   !========================================================================
+  ! Layer-mean soil moisture for a FLAT column after applying a uniform
+  ! pressure-head anomaly to the hydrostatic equilibrium profile.
+  ! A positive head_shift wets the layer and is equivalent to shifting the
+  ! reference water table upward by the same amount.
+  !========================================================================
+  function ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp) result(theta_shift)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: theta_shift
+
+    theta_shift = EquilibriumSMFlat(d_top, d_bot, WTD_ref - head_shift, theta_s, h_e, b_camp)
+
+  end function ThetaFromHeadShiftFlat
+
+  !========================================================================
+  ! Column-averaged soil moisture for the microtopography-aware column
+  ! after applying a uniform pressure-head anomaly to the hydrostatic
+  ! equilibrium profile.
+  !========================================================================
+  function ThetaFromHeadShiftMicro(d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp) result(theta_shift)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: theta_shift
+
+    theta_shift = EquilibriumSMMicroTopo(d_top, d_bot, WTD_ref - head_shift, theta_s, h_e, b_camp)
+
+  end function ThetaFromHeadShiftMicro
+
+  !========================================================================
+  ! Diagnose the uniform pressure-head anomaly that reproduces a target
+  ! layer-mean soil moisture in the flat 1D column.
+  !========================================================================
+  function HeadShiftFromThetaFlat(theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp) result(head_shift)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: head_shift
+    real(kind=kind_noahmp) :: shift_lo, shift_hi, shift_mid
+    real(kind=kind_noahmp) :: theta_lo, theta_hi, theta_mid, theta_tgt
+    integer :: iter
+    integer, parameter :: max_iter = 50
+    real(kind=kind_noahmp), parameter :: tol = 1.0e-8_kind_noahmp
+
+    shift_lo = -(d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e)
+    shift_hi =   d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e
+
+    theta_lo = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_lo, theta_s, h_e, b_camp)
+    theta_hi = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_hi, theta_s, h_e, b_camp)
+    theta_tgt = max(theta_lo, min(theta_hi, theta_target))
+
+    if (theta_tgt <= theta_lo + tol) then
+       head_shift = shift_lo
+       return
+    endif
+    if (theta_tgt >= theta_hi - tol) then
+       head_shift = shift_hi
+       return
+    endif
+
+    do iter = 1, max_iter
+       shift_mid = 0.5_kind_noahmp * (shift_lo + shift_hi)
+       theta_mid = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_mid, theta_s, h_e, b_camp)
+       if (abs(theta_mid - theta_tgt) < tol) exit
+       if (theta_mid < theta_tgt) then
+          shift_lo = shift_mid
+       else
+          shift_hi = shift_mid
+       endif
+    enddo
+
+    head_shift = 0.5_kind_noahmp * (shift_lo + shift_hi)
+
+  end function HeadShiftFromThetaFlat
+
+  !========================================================================
+  ! Diagnose the uniform pressure-head anomaly that reproduces a target
+  ! microtopography-averaged layer-mean soil moisture.
+  !========================================================================
+  function HeadShiftFromThetaMicro(theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp) result(head_shift)
+    implicit none
+    real(kind=kind_noahmp), intent(in) :: theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp
+    real(kind=kind_noahmp) :: head_shift
+    real(kind=kind_noahmp) :: shift_lo, shift_hi, shift_mid
+    real(kind=kind_noahmp) :: theta_lo, theta_hi, theta_mid, theta_tgt
+    integer :: iter
+    integer, parameter :: max_iter = 50
+    real(kind=kind_noahmp), parameter :: tol = 1.0e-8_kind_noahmp
+
+    shift_lo = -(d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e)
+    shift_hi =   d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e
+
+    theta_lo = ThetaFromHeadShiftMicro(d_top, d_bot, WTD_ref, shift_lo, theta_s, h_e, b_camp)
+    theta_hi = ThetaFromHeadShiftMicro(d_top, d_bot, WTD_ref, shift_hi, theta_s, h_e, b_camp)
+    theta_tgt = max(theta_lo, min(theta_hi, theta_target))
+
+    if (theta_tgt <= theta_lo + tol) then
+       head_shift = shift_lo
+       return
+    endif
+    if (theta_tgt >= theta_hi - tol) then
+       head_shift = shift_hi
+       return
+    endif
+
+    do iter = 1, max_iter
+       shift_mid = 0.5_kind_noahmp * (shift_lo + shift_hi)
+       theta_mid = ThetaFromHeadShiftMicro(d_top, d_bot, WTD_ref, shift_mid, theta_s, h_e, b_camp)
+       if (abs(theta_mid - theta_tgt) < tol) exit
+       if (theta_mid < theta_tgt) then
+          shift_lo = shift_mid
+       else
+          shift_hi = shift_mid
+       endif
+    enddo
+
+    head_shift = 0.5_kind_noahmp * (shift_lo + shift_hi)
+
+  end function HeadShiftFromThetaMicro
+
+  !========================================================================
   ! Find water table depth from flat-surface soil moisture deficit.
   !
   ! Given the total column deficit [m] computed from a flat 1D soil

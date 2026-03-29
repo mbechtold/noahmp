@@ -25,10 +25,15 @@ module SoilWaterMainMod
   use PeatMicroTopoMod,                  only : FloodedFrac, FsoilMicroTopo, &
                                                  EquilibriumSMFlat,           &
                                                  EquilibriumSMMicroTopo,      &
+                                                 HeadShiftFromThetaFlat,      &
+                                                 HeadShiftFromThetaMicro,     &
                                                  FindWaterTable,              &
                                                  FindWaterTableTotal,         &
                                                  SurfaceWaterStorage,         &
-                                                 SoilWaterStorageMicroTopoLite
+                                                 SoilWaterStorageMicroTopoLite, &
+                                                 ThetaFromHeadShiftFlat,      &
+                                                 ThetaFromHeadShiftMicro,     &
+                                                 z_trunc
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
   use TileDrainageSimpleMod,             only : TileDrainageSimple
@@ -100,11 +105,24 @@ contains
     real(kind=kind_noahmp)            :: W_soil_eq_end                  ! equilibrium soil water at z_wt_end [m]
     real(kind=kind_noahmp)            :: mean_delta_peat                ! mean Richards delta for conservation [m3/m3]
     real(kind=kind_noahmp)            :: delta_richards                 ! per-layer Richards SM change [m3/m3]
+   real(kind=kind_noahmp)            :: head_shift_tmp                 ! equivalent pressure-head anomaly [m]
+   real(kind=kind_noahmp)            :: head_shift_cap                 ! cap for head anomaly magnitude [m]
+   real(kind=kind_noahmp)            :: lambda_peat                    ! linear scaling of head anomalies [-]
+   real(kind=kind_noahmp)            :: W_target_peat                  ! conserved soil water target after Richards [m]
+   real(kind=kind_noahmp)            :: WTD_lo_peat                    ! lower bracket for WTD solve [m]
+   real(kind=kind_noahmp)            :: WTD_hi_peat                    ! upper bracket for WTD solve [m]
+   real(kind=kind_noahmp)            :: WTD_mid_peat                   ! midpoint for WTD solve [m]
+   real(kind=kind_noahmp)            :: W_lo_peat                      ! wet-side storage bracket [m]
+   real(kind=kind_noahmp)            :: W_hi_peat                      ! dry-side storage bracket [m]
+   real(kind=kind_noahmp)            :: W_mid_peat                     ! midpoint storage in WTD solve [m]
     integer                           :: LoopJ                         ! overflow cascade index
     integer                           :: SatTopInd                      ! topmost fully-saturated layer index
+   integer                           :: IterWTD                        ! iteration index for WTD closure
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWaterOrig   ! original SoilLiqWater before forward transfer [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqWater1D_bef ! 1D profile before Richards [m3/m3]
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer change in forward transfer [m3/m3]
+   real(kind=kind_noahmp), allocatable, dimension(:) :: HeadShiftMicro ! microtopography head anomalies [m]
+   real(kind=kind_noahmp), allocatable, dimension(:) :: HeadShiftFlat  ! flat-column head anomalies [m]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -344,9 +362,27 @@ contains
        ! ================================================================
        else
 
-          ! --- Forward excess transfer: column-averaged → 1D ---
+          ! --- Forward transfer: map disequilibrium in head space ---
           if (.not. allocated(SoilLiqWaterOrig))   allocate(SoilLiqWaterOrig(1:NumSoilLayer))
           if (.not. allocated(SoilLiqWater1D_bef)) allocate(SoilLiqWater1D_bef(1:NumSoilLayer))
+          if (.not. allocated(HeadShiftMicro))     allocate(HeadShiftMicro(1:NumSoilLayer))
+          if (.not. allocated(HeadShiftFlat))      allocate(HeadShiftFlat(1:NumSoilLayer))
+
+          HeadShiftMicro(:) = 0.0_kind_noahmp
+          HeadShiftFlat(:)  = 0.0_kind_noahmp
+          head_shift_cap    = 4.0_kind_noahmp * ae_peat
+
+          SatTopInd = NumSoilLayer + 1
+          do LoopInd1 = NumSoilLayer, 2, -1
+             if ( abs(DepthSoilLayer(LoopInd1-1)) + ae_peat >= WaterTableDepth ) then
+                SatTopInd = LoopInd1
+             else
+                exit
+             endif
+          enddo
+          if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
+             SatTopInd = 1
+          endif
 
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
@@ -356,20 +392,20 @@ contains
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
 
-             SM_eq_micro_tmp = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
-             SM_eq_flat_tmp  = EquilibriumSMFlat(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
-             SM_excess_tmp = SoilLiqWater(LoopInd1) - SM_eq_micro_tmp
-             write(*,*) 'DEBUG: SM_excess_tmp = ', SM_excess_tmp
-             write(*,*) 'DEBUG: SM_eq_flat_tmp = ', SM_eq_flat_tmp
-
              ! Store original column-averaged profile
              SoilLiqWaterOrig(LoopInd1) = SoilLiqWater(LoopInd1)
 
-             ! Build 1D profile: flat equilibrium + excess (unclamped)
-             SoilLiqWater(LoopInd1) = SM_eq_flat_tmp + SM_excess_tmp
-             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
+             if ( LoopInd1 >= SatTopInd .or. SoilLiqWaterOrig(LoopInd1) >= SoilEffPorosity(LoopInd1) - 1.0e-8_kind_noahmp ) then
+                HeadShiftMicro(LoopInd1) = 0.0_kind_noahmp
+             else
+                head_shift_tmp = HeadShiftFromThetaMicro(SoilLiqWaterOrig(LoopInd1), d_top_peat, d_bot_peat, &
+                    WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+                HeadShiftMicro(LoopInd1) = max(-head_shift_cap, min(head_shift_cap, head_shift_tmp))
+             endif
+
+             SoilLiqWater(LoopInd1) = ThetaFromHeadShiftFlat(d_top_peat, d_bot_peat, WaterTableDepth, &
+                 HeadShiftMicro(LoopInd1), thetas_peat, ae_peat, bb_peat)
+             SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
           enddo
 
          ! Debug: Write out SoilLiqWaterOrig and z_wt_begin
@@ -491,10 +527,7 @@ contains
              enddo
           endif
 
-          ! --- Backward transfer: compute per-layer Richards delta ---
-          ! delta_i = SoilLiqWater_1D_after(i) - SoilLiqWater1D_bef(i)
-          ! This captures the redistribution/ET/infiltration change from Richards.
-          ! We do NOT apply it to SoilLiqWaterOrig yet; instead we rebase below.
+          ! --- Backward transfer target: conserved soil water from Richards path ---
 
           ! Flux-based FSW_change diagnostic reference
           FSW_change_flux = InfilRateSfc_FSW_change * SoilTimeStep * 1000.0_kind_noahmp &
@@ -511,94 +544,102 @@ contains
          write(*,*) '  Transpiration = ', Transpiration
          write(*,*) '  RunoffSubsurface = ', RunoffSubsurface
 
-          ! --- Compute total soil water after backward transfer [m] ---
-          W_soil_peat = 0.0_kind_noahmp
+          ! Conserved soil water target after Richards and runoff removal [m]
+          W_target_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
-             W_soil_peat = W_soil_peat + &
+             W_target_peat = W_target_peat + &
                  (SoilLiqWaterOrig(LoopInd1) + &
                   (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))) * &
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
 
-          ! --- Diagnose final WTD from soil water only (Richards path) ---
-          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat, z_wt_begin)
-          WaterTableDepth = -z_wt_end
-
-          ! Equilibrium soil water at the new WTD [m]
-          ! W_soil_eq_end = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
-          !    bb_peat, z_col_bot_peat)
-
-          ! --- Mean Richards delta for conservation ---
-          ! Rebase onto equilibrium(WTD_end) + delta, then compute
-          ! additive correction so sum(SM_rebased * dz) = W_soil_eq_end.
-          ! This ensures the soil/surface water partition is exact.
-
-          ! Pass 1: build profile as theta_orig + delta_richards, track total
-          W_soil_check = 0.0_kind_noahmp
+          ! Convert the post-Richards flat profile into equivalent head anomalies.
           do LoopInd1 = 1, NumSoilLayer
-             delta_richards = SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
-
-             SoilLiqWater(LoopInd1) = SoilLiqWaterOrig(LoopInd1) + delta_richards
-                      write(*,*) 'DEBUG: delta_richards = ', delta_richards
-                      write(*,*) 'DEBUG: SoilLiqWaterOrig(LoopInd1) = ', SoilLiqWaterOrig(LoopInd1)
-
-             W_soil_check = W_soil_check + &
-                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
-          enddo
-
-         ! Debug: Write out SoilLiqWater after backward transfer and z_wt_end
-         write(*,*) 'DEBUG: z_wt_end = ', z_wt_end
-         write(*,*) 'DEBUG: SoilLiqWater after backward transfer:'
-         do LoopInd1 = 1, NumSoilLayer
-            write(*,*) '  Layer', LoopInd1, SoilLiqWater(LoopInd1)
-         enddo
-
-          ! Pass 2: additive normalization
-          !mean_delta_peat = (W_soil_check - W_soil_eq_end) / z_col_bot_peat
-          !do LoopInd1 = 1, NumSoilLayer
-          !   SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - mean_delta_peat
-          !enddo
-
-          ! --- Saturated-layer equilibrium override ---
-          ! Layers fully below the new WTD (+ capillary fringe) were decoupled
-          ! from Richards (delta_richards = 0), so their SM would stay frozen
-          ! at the previous timestep value. Override with the current equilibrium
-          ! profile so they track WTD changes smoothly (consistent with the
-          ! equilibrium path behavior for WTD < 0.3).
-          SatTopInd = NumSoilLayer + 1
-          do LoopInd1 = NumSoilLayer, 2, -1
-             if ( abs(DepthSoilLayer(LoopInd1-1)) + ae_peat >= WaterTableDepth ) then
-                SatTopInd = LoopInd1
-             else
-                exit
-             endif
-          enddo
-          if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
-             SatTopInd = 1
-          endif
-          do LoopInd1 = SatTopInd, NumSoilLayer
              if (LoopInd1 == 1) then
                 d_top_peat = 0.0_kind_noahmp
              else
                 d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+
+             if ( SoilLiqWater(LoopInd1) >= SoilEffPorosity(LoopInd1) - 1.0e-8_kind_noahmp ) then
+                HeadShiftFlat(LoopInd1) = 0.0_kind_noahmp
+             else
+                head_shift_tmp = HeadShiftFromThetaFlat(SoilLiqWater(LoopInd1), d_top_peat, d_bot_peat, &
+                    WTD_begin, thetas_peat, ae_peat, bb_peat)
+                HeadShiftFlat(LoopInd1) = max(-head_shift_cap, min(head_shift_cap, head_shift_tmp))
+             endif
           enddo
 
-          ! --- Water balance: re-diagnose WTD after equilibrium override ---
-          ! The override changed saturated-layer SM, so total soil water
-          ! and the consistent WTD must be recomputed.
-          W_soil_peat = 0.0_kind_noahmp
+          ! Solve final WTD so the head-shifted microtopography profile
+          ! matches the conserved soil water after the Richards step.
+          lambda_peat = 1.0_kind_noahmp
+          WTD_lo_peat = -z_trunc
+          WTD_hi_peat = z_col_bot_peat + z_trunc + head_shift_cap
+
+          W_lo_peat = 0.0_kind_noahmp
+          W_hi_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
-             W_soil_peat = W_soil_peat + &
-                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             W_lo_peat = W_lo_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_lo_peat, &
+                 lambda_peat * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                 abs(ThicknessSnowSoilLayer(LoopInd1))
+             W_hi_peat = W_hi_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_hi_peat, &
+                 lambda_peat * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                 abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
-          z_wt_end = FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat, z_wt_end)
-          WaterTableDepth = -z_wt_end
+
+          if ( W_target_peat >= W_lo_peat ) then
+             WaterTableDepth = WTD_lo_peat
+          else if ( W_target_peat <= W_hi_peat ) then
+             WaterTableDepth = WTD_hi_peat
+          else
+             do IterWTD = 1, 50
+                WTD_mid_peat = 0.5_kind_noahmp * (WTD_lo_peat + WTD_hi_peat)
+                W_mid_peat = 0.0_kind_noahmp
+                do LoopInd1 = 1, NumSoilLayer
+                   if (LoopInd1 == 1) then
+                      d_top_peat = 0.0_kind_noahmp
+                   else
+                      d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+                   endif
+                   d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+                   W_mid_peat = W_mid_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_mid_peat, &
+                       lambda_peat * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                       abs(ThicknessSnowSoilLayer(LoopInd1))
+                enddo
+                if ( abs(W_mid_peat - W_target_peat) < 1.0e-8_kind_noahmp ) exit
+                if ( W_mid_peat > W_target_peat ) then
+                   WTD_lo_peat = WTD_mid_peat
+                else
+                   WTD_hi_peat = WTD_mid_peat
+                endif
+             enddo
+             WaterTableDepth = 0.5_kind_noahmp * (WTD_lo_peat + WTD_hi_peat)
+          endif
+
+          z_wt_end = -WaterTableDepth
+
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             SoilLiqWater(LoopInd1) = ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WaterTableDepth, &
+                 lambda_peat * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat)
+          enddo
+
+          W_soil_check = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_check = W_soil_check + SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
 
           ! --- Saturation overflow cascade ---
           do LoopInd1 = 1, NumSoilLayer
@@ -643,11 +684,11 @@ contains
              SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, SoilLiqWater(LoopInd1))
           enddo
 
-          ! FSW_change: flux-based (Richards path, soil not in equilibrium)
+          ! FSW_change stays flux-based because the final microtopography
+          ! profile is solved to the conserved Richards soil water target.
           FSW_change = FSW_change_flux
 
-          ! No partition error in flux-based approach
-          FSW_peat_error = 0.0_kind_noahmp
+          FSW_peat_error = (W_soil_check - W_target_peat) * 1000.0_kind_noahmp
 
           ! Update FloodedFraction from final WTD
           FloodedFraction = FloodedFrac(z_wt_end)
@@ -675,6 +716,8 @@ contains
        ! Deallocate peatland local arrays
        if (allocated(SoilLiqWaterOrig))   deallocate(SoilLiqWaterOrig)
        if (allocated(SoilLiqWater1D_bef)) deallocate(SoilLiqWater1D_bef)
+      if (allocated(HeadShiftMicro))     deallocate(HeadShiftMicro)
+      if (allocated(HeadShiftFlat))      deallocate(HeadShiftFlat)
        if (allocated(SoilLiqGap))         deallocate(SoilLiqGap)
 
     else   ! non-peatland path
