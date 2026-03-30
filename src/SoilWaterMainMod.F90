@@ -199,6 +199,11 @@ contains
                                                    ThicknessSnowSoilLayer(LoopInd1)
        SoilLiqWater(LoopInd1)    = min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1))
     enddo
+    ! Peatland: add clipped excess back to top layer (no surface runoff)
+    if ( OptPeatlandPhysics == 1 .and. abs(SoilSatExcAcc) > 0.0 ) then
+       SoilLiqWater(1) = SoilLiqWater(1) + SoilSatExcAcc / ThicknessSnowSoilLayer(1)
+       SoilSatExcAcc   = 0.0
+    endif
 
     ! impermeable fraction due to frozen soil
     do LoopInd1 = 1, NumSoilLayer
@@ -355,8 +360,8 @@ contains
 
           ! No Richards iterations needed
           DrainSoilBot = 0.0
-          ! Route any pre-clipped saturation excess as surface runoff [mm/s]
-          RunoffSurface = SoilSatExcAcc * 1000.0 / SoilTimeStep
+          ! Peatland: no surface runoff
+          RunoffSurface = 0.0_kind_noahmp
 
        ! ================================================================
        ! RICHARDS PATH: WTD >= 0.3 m (Deep WT, full Richards)
@@ -371,7 +376,7 @@ contains
 
           HeadShiftMicro(:) = 0.0_kind_noahmp
           HeadShiftFlat(:)  = 0.0_kind_noahmp
-          head_shift_cap    = 4.0_kind_noahmp * ae_peat
+          head_shift_cap    = abs(DepthSoilLayer(NumSoilLayer))
 
           ! Active/inactive: layer is inactive (decoupled) unless WT+capillary
           ! fringe is entirely below the layer bottom.
@@ -510,22 +515,19 @@ contains
           RunoffSurfaceAcc = 0.0
 
           do IndIter = 1, NumIterSoilWat
-             if ( SoilSfcInflowMean > 0.0 ) then
-                if ( OptRunoffSurface == 3 ) call RunoffSurfaceFreeDrain(noahmp,TimeStepFine)
-                if ( OptRunoffSurface == 6 ) call RunoffSurfaceVIC(noahmp,TimeStepFine)
-                if ( OptRunoffSurface == 7 ) call RunoffSurfaceXinAnJiang(noahmp,TimeStepFine)
-                if ( OptRunoffSurface == 8 ) call RunoffSurfaceDynamicVic(noahmp,TimeStepFine,InfilSfcAcc)
-             endif
+             ! Peatland: skip RunoffSurface calls — all water infiltrates
              call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
              call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
-             SoilSatExcAcc    = SoilSatExcAcc + SoilSaturationExcess
+             ! Add saturation excess back to top layer (peatland: no surface runoff)
+             SoilLiqWater(1) = SoilLiqWater(1) + SoilSaturationExcess / abs(ThicknessSnowSoilLayer(1))
              DrainSoilBotAcc  = DrainSoilBotAcc + DrainSoilBot
-             RunoffSurfaceAcc = RunoffSurfaceAcc + RunoffSurface
           enddo
 
           DrainSoilBot  = DrainSoilBotAcc / NumIterSoilWat
-          RunoffSurface = RunoffSurfaceAcc / NumIterSoilWat
-          RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
+          RunoffSurface = 0.0_kind_noahmp
+
+          ! Peatland: no surface runoff — Richards excess re-absorbed into soil.
+          ! The backward transfer conserves water via bisection on the micro profile.
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
           ! Exclude inactive layers (WT+capillary fringe above layer bottom)
@@ -787,9 +789,9 @@ contains
                       LoopJ = LoopJ + 1
                    enddo
                 endif
-                ! Remaining excess -> surface runoff
+                ! Remaining excess -> ignored for peatland (no surface runoff)
                 if (excess_vol > 0.0_kind_noahmp) then
-                   RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
+                   ! RunoffSurface = RunoffSurface + excess_vol * 1000.0 / SoilTimeStep
                 endif
              endif
           enddo
