@@ -306,14 +306,11 @@ contains
           ! Find z_wt from combined soil+surface storage (exact conservation)
           z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat, z_wt_begin)
+          WaterTableDepth = -z_wt_end
 
           ! Soil water from the new z_wt [m]
           W_soil_peat = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat)
-
-          ! Soil-only WTD for equilibrium profile (consistent with backward transfer)
-          WaterTableDepth = -FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat, z_wt_begin)
 
           ! Set soil moisture to column-averaged hydrostatic equilibrium
           do LoopInd1 = 1, NumSoilLayer
@@ -458,12 +455,45 @@ contains
              SoilLiqWater1D_bef(LoopInd1) = SoilLiqWater(LoopInd1)
           enddo
 
+          ! DEBUG FORWARD: Write full state after forward transfer
+          write(*,*) 'DEBUG FORWARD: WTD_begin=', WaterTableDepth, ' SatTopInd=', SatTopInd
+          do LoopInd1 = 1, NumSoilLayer
+             write(*,*) 'DEBUG FORWARD L', LoopInd1, &
+                        ' theta_orig_micro=', SoilLiqWaterOrig(LoopInd1), &
+                        ' HeadShiftMicro=', HeadShiftMicro(LoopInd1), &
+                        ' theta_flat_1D=', SoilLiqWater1D_bef(LoopInd1)
+          enddo
+
           ! --- Determine iteration times ---
           NumIterSoilWat = 3
           if ( (InfilRateSfc*SoilTimeStep) > (ThicknessSnowSoilLayer(1)*SoilMoistureSat(1)) ) then
              NumIterSoilWat = NumIterSoilWat*2
           endif
           TimeStepFine = SoilTimeStep / NumIterSoilWat
+
+          ! Peatland: redistribute transpiration uniformly over active layers
+          ! (weighted by thickness only, not conductivity).
+          ! Sum total transpiration, then redistribute over layers above SatTopInd.
+          TranspSoil_peat = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             TranspSoil_peat = TranspSoil_peat + TranspWatLossSoilMean(LoopInd1)
+          enddo
+          if (SatTopInd > 1 .and. TranspSoil_peat > 0.0_kind_noahmp) then
+             ! Compute total active thickness
+             d_top_peat = 0.0_kind_noahmp
+             do LoopInd1 = 1, SatTopInd - 1
+                d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
+             enddo
+             ! Redistribute uniformly by thickness over active layers
+             do LoopInd1 = 1, NumSoilLayer
+                if (LoopInd1 < SatTopInd) then
+                   TranspWatLossSoilMean(LoopInd1) = TranspSoil_peat * &
+                       abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
+                else
+                   TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+                endif
+             enddo
+          endif
 
           ! --- Solve soil moisture via Richards ---
           InfilSfcAcc      = 1.0e-06
@@ -499,15 +529,15 @@ contains
              endif
           enddo
 
-          SoilWatConductAcc = 0.0
+          d_top_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
-             SoilWatConductAcc = SoilWatConductAcc + SoilWatConductivity(LoopInd1) * ThicknessSnowSoilLayer(LoopInd1)
+             d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
-          if (SoilWatConductAcc > 0.0) then
+          if (d_top_peat > 0.0_kind_noahmp) then
              do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
                 WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
-                             (SoilWatConductivity(LoopInd1)*ThicknessSnowSoilLayer(LoopInd1)) / SoilWatConductAcc
-                SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (ThicknessSnowSoilLayer(LoopInd1)*1000.0)
+                             abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
+                SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (abs(ThicknessSnowSoilLayer(LoopInd1))*1000.0)
              enddo
           endif
 
@@ -527,6 +557,14 @@ contains
                   (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))) * &
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
+
+          ! DEBUG POST-RICHARDS: Write profile after Richards + runoff removal
+          do LoopInd1 = 1, NumSoilLayer
+             write(*,*) 'DEBUG POST-RICHARDS L', LoopInd1, &
+                        ' theta_flat_post=', SoilLiqWater(LoopInd1), &
+                        ' delta_richards=', SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
+          enddo
+          write(*,*) 'DEBUG POST-RICHARDS: W_target=', W_target_peat
 
           ! --- Backward transfer: two-WTD + multiplicative lambda ---
 
@@ -701,6 +739,22 @@ contains
           W_soil_check = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              W_soil_check = W_soil_check + SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+
+          ! DEBUG FINAL: Compare backward result with equilibrium at WTD_end_micro
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             write(*,*) 'DEBUG FINAL L', LoopInd1, &
+                        ' theta_micro_final=', SoilLiqWater(LoopInd1), &
+                        ' theta_equil_micro=', EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                            WTD_end_micro, thetas_peat, ae_peat, bb_peat), &
+                        ' diff=', SoilLiqWater(LoopInd1) - EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                            WTD_end_micro, thetas_peat, ae_peat, bb_peat)
           enddo
 
           ! --- Saturation overflow cascade ---
