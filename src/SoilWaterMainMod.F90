@@ -584,10 +584,10 @@ contains
           ! (f) Bisect on lambda to enforce water balance:
           !     sum ThetaFromHeadShiftMicro(WTD_end_flat, lambda*dh(i)) * dz(i) = W_target
           !     At lambda=0: W = W_equil_micro(WTD_end_flat) /= W_target → non-trivial root
-          lambda_lo  = 0.0_kind_noahmp
-          lambda_hi  = 5.0_kind_noahmp
+          lambda_lo  = -5.0_kind_noahmp
+          lambda_hi  =  5.0_kind_noahmp
 
-          ! Evaluate storage at lambda_lo = 0 (micro equilibrium at WTD_end_flat)
+          ! Evaluate storage at lambda_lo (strongly dried profile)
           W_lo_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
@@ -614,6 +614,8 @@ contains
                  lambda_hi * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
+
+          write(*,*) 'DEBUG BACKWARD: W_lo=', W_lo_peat, ' W_hi=', W_hi_peat, ' W_target=', W_target_peat
 
           ! Determine orientation: W increases or decreases with lambda
           ! (depends on sign of head shifts — wetting vs drying)
