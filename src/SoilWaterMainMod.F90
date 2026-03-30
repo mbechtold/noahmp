@@ -306,11 +306,14 @@ contains
           ! Find z_wt from combined soil+surface storage (exact conservation)
           z_wt_end = FindWaterTableTotal(W_total_peat, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat, z_wt_begin)
-          WaterTableDepth = -z_wt_end
 
           ! Soil water from the new z_wt [m]
           W_soil_peat = SoilWaterStorageMicroTopoLite(z_wt_end, thetas_peat, ae_peat, &
               bb_peat, z_col_bot_peat)
+
+          ! Soil-only WTD for equilibrium profile (consistent with backward transfer)
+          WaterTableDepth = -FindWaterTable(W_soil_peat, thetas_peat, ae_peat, &
+              bb_peat, z_col_bot_peat, z_wt_begin)
 
           ! Set soil moisture to column-averaged hydrostatic equilibrium
           do LoopInd1 = 1, NumSoilLayer
