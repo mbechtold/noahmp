@@ -34,6 +34,7 @@ module SoilWaterMainMod
                                                  ThetaFromHeadShiftFlat,      &
                                                  ThetaFromHeadShiftMicro,     &
                                                  FindWaterTableFlat,          &
+                                                 EquilibriumSMMicroTopo,      &
                                                  z_trunc
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
@@ -108,13 +109,13 @@ contains
     real(kind=kind_noahmp)            :: delta_richards                 ! per-layer Richards SM change [m3/m3]
    real(kind=kind_noahmp)            :: head_shift_tmp                 ! equivalent pressure-head anomaly [m]
    real(kind=kind_noahmp)            :: head_shift_cap                 ! cap for head anomaly magnitude [m]
-   real(kind=kind_noahmp)            :: lambda_peat                    ! multiplicative scaling of head anomalies [-]
+   real(kind=kind_noahmp)            :: WTD_ref_peat                   ! bisection-converged reference WTD [m], pos. downward
    real(kind=kind_noahmp)            :: W_target_peat                  ! conserved soil water target after Richards [m]
    real(kind=kind_noahmp)            :: WTD_end_micro                  ! micro-aware WTD from W_target [m], pos. downward
    real(kind=kind_noahmp)            :: WTD_end_flat                   ! flat-column WTD from flat deficit [m], pos. downward
    real(kind=kind_noahmp)            :: flat_deficit_peat              ! flat-column deficit after Richards [m]
-   real(kind=kind_noahmp)            :: lambda_lo, lambda_hi, lambda_mid ! lambda bisection brackets
-   real(kind=kind_noahmp)            :: W_lo_peat, W_hi_peat, W_mid_peat ! storage at lambda brackets [m]
+   real(kind=kind_noahmp)            :: WTD_ref_lo, WTD_ref_hi, WTD_ref_mid ! WTD_ref bisection brackets [m]
+   real(kind=kind_noahmp)            :: W_lo_peat, W_hi_peat, W_mid_peat ! storage at WTD_ref brackets [m]
     integer                           :: LoopJ                         ! overflow cascade index
     integer                           :: SatTopInd                      ! topmost fully-saturated layer index
    integer                           :: IterWTD                        ! iteration index for WTD closure
@@ -581,13 +582,14 @@ contains
                         HeadShiftFlat(LoopInd1), ' theta_flat=', SoilLiqWater(LoopInd1)
           enddo
 
-          ! (f) Bisect on lambda to enforce water balance:
-          !     sum ThetaFromHeadShiftMicro(WTD_end_flat, lambda*dh(i)) * dz(i) = W_target
-          !     At lambda=0: W = W_equil_micro(WTD_end_flat) /= W_target → non-trivial root
-          lambda_lo  = -5.0_kind_noahmp
-          lambda_hi  =  5.0_kind_noahmp
+          ! (f) Bisect on WTD_ref to enforce water balance:
+          !     Saturated layers (HeadShiftFlat==0): fixed at EquilibriumSMMicroTopo(WTD_end_micro)
+          !     Unsaturated layers (HeadShiftFlat/=0): ThetaFromHeadShiftMicro(WTD_ref, dh(i))
+          !     Bisect WTD_ref so total W = W_target
+          WTD_ref_lo = max(-1.0_kind_noahmp, WTD_end_micro - 2.0_kind_noahmp)
+          WTD_ref_hi = WTD_end_micro + 2.0_kind_noahmp
 
-          ! Evaluate storage at lambda_lo (strongly dried profile)
+          ! Evaluate storage at WTD_ref_lo (shallow -> more water in unsat layers)
           W_lo_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
@@ -596,12 +598,18 @@ contains
                 d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-             W_lo_peat = W_lo_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_end_flat, &
-                 lambda_lo * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
-                 abs(ThicknessSnowSoilLayer(LoopInd1))
+             if ( HeadShiftFlat(LoopInd1) == 0.0_kind_noahmp ) then
+                W_lo_peat = W_lo_peat + EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                    WTD_end_micro, thetas_peat, ae_peat, bb_peat) * &
+                    abs(ThicknessSnowSoilLayer(LoopInd1))
+             else
+                W_lo_peat = W_lo_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_ref_lo, &
+                    HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                    abs(ThicknessSnowSoilLayer(LoopInd1))
+             endif
           enddo
 
-          ! Evaluate storage at lambda_hi
+          ! Evaluate storage at WTD_ref_hi (deep -> less water in unsat layers)
           W_hi_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
@@ -610,23 +618,27 @@ contains
                 d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-             W_hi_peat = W_hi_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_end_flat, &
-                 lambda_hi * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
-                 abs(ThicknessSnowSoilLayer(LoopInd1))
+             if ( HeadShiftFlat(LoopInd1) == 0.0_kind_noahmp ) then
+                W_hi_peat = W_hi_peat + EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                    WTD_end_micro, thetas_peat, ae_peat, bb_peat) * &
+                    abs(ThicknessSnowSoilLayer(LoopInd1))
+             else
+                W_hi_peat = W_hi_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_ref_hi, &
+                    HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                    abs(ThicknessSnowSoilLayer(LoopInd1))
+             endif
           enddo
 
           write(*,*) 'DEBUG BACKWARD: W_lo=', W_lo_peat, ' W_hi=', W_hi_peat, ' W_target=', W_target_peat
 
-          ! Determine orientation: W increases or decreases with lambda
-          ! (depends on sign of head shifts — wetting vs drying)
+          ! Check bracket
           if ( (W_lo_peat - W_target_peat) * (W_hi_peat - W_target_peat) > 0.0_kind_noahmp ) then
-             ! Target not bracketed — extend lambda_hi or fall back to lambda=1
-             lambda_peat = 1.0_kind_noahmp
-             write(*,*) 'DEBUG BACKWARD: lambda bracket failure, using lambda=1.0'
+             WTD_ref_peat = WTD_end_micro
+             write(*,*) 'DEBUG BACKWARD: WTD_ref bracket failure, using WTD_end_micro'
           else
-             ! Bisection on lambda
+             ! Bisection on WTD_ref
              do IterWTD = 1, 50
-                lambda_mid = 0.5_kind_noahmp * (lambda_lo + lambda_hi)
+                WTD_ref_mid = 0.5_kind_noahmp * (WTD_ref_lo + WTD_ref_hi)
                 W_mid_peat = 0.0_kind_noahmp
                 do LoopInd1 = 1, NumSoilLayer
                    if (LoopInd1 == 1) then
@@ -635,30 +647,38 @@ contains
                       d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
                    endif
                    d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-                   W_mid_peat = W_mid_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_end_flat, &
-                       lambda_mid * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
-                       abs(ThicknessSnowSoilLayer(LoopInd1))
+                   if ( HeadShiftFlat(LoopInd1) == 0.0_kind_noahmp ) then
+                      W_mid_peat = W_mid_peat + EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                          WTD_end_micro, thetas_peat, ae_peat, bb_peat) * &
+                          abs(ThicknessSnowSoilLayer(LoopInd1))
+                   else
+                      W_mid_peat = W_mid_peat + ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_ref_mid, &
+                          HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat) * &
+                          abs(ThicknessSnowSoilLayer(LoopInd1))
+                   endif
                 enddo
                 if ( abs(W_mid_peat - W_target_peat) < 1.0e-8_kind_noahmp ) exit
-                ! Determine which side to narrow based on W orientation
                 if ( (W_mid_peat - W_target_peat) * (W_lo_peat - W_target_peat) > 0.0_kind_noahmp ) then
-                   lambda_lo = lambda_mid
+                   WTD_ref_lo = WTD_ref_mid
                    W_lo_peat = W_mid_peat
                 else
-                   lambda_hi = lambda_mid
+                   WTD_ref_hi = WTD_ref_mid
                    W_hi_peat = W_mid_peat
                 endif
              enddo
-             lambda_peat = 0.5_kind_noahmp * (lambda_lo + lambda_hi)
+             WTD_ref_peat = 0.5_kind_noahmp * (WTD_ref_lo + WTD_ref_hi)
           endif
 
-          write(*,*) 'DEBUG BACKWARD: lambda_peat=', lambda_peat
+          write(*,*) 'DEBUG BACKWARD: WTD_ref_peat=', WTD_ref_peat, &
+                     ' WTD_end_micro=', WTD_end_micro, ' WTD_end_flat=', WTD_end_flat
 
           ! (g) Store WTD_end_micro as the diagnostic water table depth
           WaterTableDepth = WTD_end_micro
           z_wt_end = -WTD_end_micro
 
-          ! (h) Set final micro profile using WTD_end_flat + lambda-scaled head shifts
+          ! (h) Set final micro profile:
+          !     Saturated layers: micro equilibrium at WTD_end_micro
+          !     Unsaturated layers: WTD_ref_peat + head shifts
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
                 d_top_peat = 0.0_kind_noahmp
@@ -666,8 +686,13 @@ contains
                 d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
              endif
              d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-             SoilLiqWater(LoopInd1) = ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_end_flat, &
-                 lambda_peat * HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat)
+             if ( HeadShiftFlat(LoopInd1) == 0.0_kind_noahmp ) then
+                SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                    WTD_end_micro, thetas_peat, ae_peat, bb_peat)
+             else
+                SoilLiqWater(LoopInd1) = ThetaFromHeadShiftMicro(d_top_peat, d_bot_peat, WTD_ref_peat, &
+                    HeadShiftFlat(LoopInd1), thetas_peat, ae_peat, bb_peat)
+             endif
           enddo
 
           W_soil_check = 0.0_kind_noahmp
