@@ -204,27 +204,21 @@ contains
        MatRight(LoopInd) = WaterExcess(LoopInd) / (-SoilThickTmp(LoopInd))
     enddo
 
-    ! Peatland: decouple saturated zone from Richards domain.
-    ! Layers fully below the tracked water table should not participate
-    ! in unsaturated Richards flux — they are in hydrostatic equilibrium.
-    ! This prevents the theta-based discretization from generating
-    ! spurious gravitational flux across the poorly-resolved WT boundary.
+    ! Peatland: decouple inactive layers from Richards domain.
+    ! A layer is inactive (decoupled) unless the WT + capillary fringe
+    ! is entirely below the layer bottom. This prevents the theta-based
+    ! discretization from generating spurious gravitational flux across
+    ! the poorly-resolved WT boundary.
     if ( OptPeatlandPhysics == 1 ) then
-       ! Find topmost layer whose top is at or below WTD (including capillary fringe).
-       ! A layer stays decoupled while its top + air entry value >= WTD, because
-       ! the capillary fringe keeps it fully saturated.
+       ! Find topmost inactive layer using layer-bottom criterion.
        SatTopInd = NumSoilLayer + 1
-       do LoopInd = NumSoilLayer, 2, -1
-          if ( abs(DepthSoilLayer(LoopInd-1)) + abs(SoilMatPotentialSat(1)) >= WaterTableDepth ) then
+       do LoopInd = NumSoilLayer, 1, -1
+          if ( abs(DepthSoilLayer(LoopInd)) + abs(SoilMatPotentialSat(1)) >= WaterTableDepth ) then
              SatTopInd = LoopInd
           else
              exit
           endif
        enddo
-       ! Also check layer 1: if WTD <= 0 (surface ponding), all layers saturated
-       if ( SatTopInd == 2 .and. WaterTableDepth <= 0.0_kind_noahmp ) then
-          SatTopInd = 1
-       endif
 
        if ( SatTopInd <= NumSoilLayer ) then
           TransInd = SatTopInd - 1
