@@ -87,6 +87,8 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: MatLeft3     ! left-hand side term
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqTmp   ! temporary soil liquid water [mm]
     real(kind=kind_noahmp)            :: d_top_peat, d_bot_peat       ! layer depth bounds for peat [m]
+    real(kind=kind_noahmp)            :: z_mid_peat                   ! layer midpoint depth [m]
+    real(kind=kind_noahmp)            :: h_peat                       ! suction head at midpoint [m]
     real(kind=kind_noahmp)            :: z_col_bot_peat               ! column bottom depth [m]
     real(kind=kind_noahmp)            :: thetas_peat, ae_peat, bb_peat! Campbell peat parameters
     real(kind=kind_noahmp)            :: SM_eq_flat_tmp                ! temporary flat equilibrium SM
@@ -401,8 +403,15 @@ contains
                 HeadShiftMicro(LoopInd1) = max(-head_shift_cap, min(head_shift_cap, head_shift_tmp))
              endif
 
-             SoilLiqWater(LoopInd1) = ThetaFromHeadShiftFlat(d_top_peat, d_bot_peat, WaterTableDepth, &
-                 HeadShiftMicro(LoopInd1), thetas_peat, ae_peat, bb_peat)
+             ! Flat-domain point value at layer midpoint (eliminates
+             ! discretisation bias: h(theta_point) = h(z_mid) exactly)
+             z_mid_peat = 0.5_kind_noahmp * (d_top_peat + d_bot_peat)
+             h_peat = WaterTableDepth - HeadShiftMicro(LoopInd1) - z_mid_peat
+             if (h_peat <= ae_peat) then
+                SoilLiqWater(LoopInd1) = thetas_peat
+             else
+                SoilLiqWater(LoopInd1) = thetas_peat * (h_peat / ae_peat)**(-1.0_kind_noahmp/bb_peat)
+             endif
              SoilLiqWater(LoopInd1) = max(0.001_kind_noahmp, min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1)))
           enddo
 
@@ -573,21 +582,10 @@ contains
               bb_peat, z_col_bot_peat, z_wt_begin)
           WTD_end_micro = -z_wt_end
 
-          ! (c) WTD_end_flat: flat-column WTD from flat deficit (internal reference)
-          flat_deficit_peat = 0.0_kind_noahmp
-          do LoopInd1 = 1, NumSoilLayer
-             flat_deficit_peat = flat_deficit_peat + &
-                 (thetas_peat - SoilLiqWater(LoopInd1)) * &
-                 abs(ThicknessSnowSoilLayer(LoopInd1))
-          enddo
-          flat_deficit_peat = max(0.0_kind_noahmp, flat_deficit_peat)
-          WTD_end_flat = FindWaterTableFlat(flat_deficit_peat, thetas_peat, ae_peat, &
-              bb_peat, z_col_bot_peat)
-
-          ! (d) Recompute SatTopInd at WTD_end_flat for backward transfer
+          ! (c) Recompute SatTopInd at WTD_end_micro for backward transfer
           SatTopInd = NumSoilLayer + 1
           do LoopInd1 = NumSoilLayer, 1, -1
-             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WTD_end_flat ) then
+             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WTD_end_micro ) then
                 SatTopInd = LoopInd1
              else
                 exit
@@ -608,15 +606,17 @@ contains
                   SoilLiqWater(LoopInd1) >= SoilEffPorosity(LoopInd1) - 1.0e-8_kind_noahmp ) then
                 HeadShiftFlat(LoopInd1) = 0.0_kind_noahmp
              else
-                head_shift_tmp = HeadShiftFromThetaFlat(SoilLiqWater(LoopInd1), d_top_peat, d_bot_peat, &
-                    WTD_end_flat, thetas_peat, ae_peat, bb_peat)
+                ! Closed-form head shift from midpoint point value
+                z_mid_peat = 0.5_kind_noahmp * (d_top_peat + d_bot_peat)
+                h_peat = ae_peat * (SoilLiqWater(LoopInd1) / thetas_peat)**(-bb_peat)
+                head_shift_tmp = (WTD_end_micro - z_mid_peat) - h_peat
                 HeadShiftFlat(LoopInd1) = max(-head_shift_cap, min(head_shift_cap, head_shift_tmp))
              endif
           enddo
 
           ! DEBUG: Write head shift diagnostics
           write(*,*) 'DEBUG BACKWARD: WTD_end_micro=', WTD_end_micro, &
-                     ' WTD_end_flat=', WTD_end_flat, ' W_target=', W_target_peat
+                     ' W_target=', W_target_peat
           write(*,*) 'DEBUG BACKWARD: SatTopInd=', SatTopInd
           do LoopInd1 = 1, NumSoilLayer
              write(*,*) 'DEBUG HeadShiftFlat Layer', LoopInd1, &
