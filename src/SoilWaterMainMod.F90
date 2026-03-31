@@ -371,7 +371,7 @@ contains
 
           HeadShiftMicro(:) = 0.0_kind_noahmp
           HeadShiftFlat(:)  = 0.0_kind_noahmp
-          head_shift_cap    = 4.0_kind_noahmp * ae_peat
+          head_shift_cap    = 1.0_kind_noahmp
 
           ! Active/inactive: layer is inactive (decoupled) unless WT+capillary
           ! fringe is entirely below the layer bottom.
@@ -627,8 +627,8 @@ contains
           !     Saturated layers (HeadShiftFlat==0): fixed at EquilibriumSMMicroTopo(WTD_end_micro)
           !     Unsaturated layers (HeadShiftFlat/=0): ThetaFromHeadShiftMicro(WTD_ref, dh(i))
           !     Bisect WTD_ref so total W = W_target
-          WTD_ref_lo = max(-1.0_kind_noahmp, WTD_end_micro - 2.0_kind_noahmp)
-          WTD_ref_hi = WTD_end_micro + 2.0_kind_noahmp
+          WTD_ref_lo = max(-1.0_kind_noahmp, WTD_end_micro - 5.0_kind_noahmp)
+          WTD_ref_hi = WTD_end_micro + 5.0_kind_noahmp
 
           ! Evaluate storage at WTD_ref_lo (shallow -> more water in unsat layers)
           W_lo_peat = 0.0_kind_noahmp
