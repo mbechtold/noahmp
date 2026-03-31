@@ -98,6 +98,7 @@ contains
     real(kind=kind_noahmp)            :: excess_vol                    ! overflow excess volume [m]
     real(kind=kind_noahmp)            :: space_avail                   ! available pore space [m]
     real(kind=kind_noahmp)            :: transfer_vol                  ! overflow transfer volume [m]
+    real(kind=kind_noahmp)            :: SatExcPeat                    ! accumulated saturation excess in Richards loop [m]
     real(kind=kind_noahmp)            :: InfilSoil_peat                ! soil-portion infiltration [m/s]
     real(kind=kind_noahmp)            :: EvapSoil_peat                 ! soil-portion evaporation [mm/s]
     real(kind=kind_noahmp)            :: TranspSoil_peat               ! soil-portion transpiration [mm/s]
@@ -195,15 +196,14 @@ contains
     ! for the case when snowmelt water is too large
     do LoopInd1 = 1, NumSoilLayer
        SoilEffPorosity(LoopInd1) = max(1.0e-4, (SoilMoistureSat(LoopInd1) - SoilIce(LoopInd1)))
-       SoilSatExcAcc             = SoilSatExcAcc + max(0.0, SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
-                                                   ThicknessSnowSoilLayer(LoopInd1)
-       SoilLiqWater(LoopInd1)    = min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1))
+       if ( OptPeatlandPhysics /= 1 ) then
+          ! Non-peatland: clip and accumulate excess as surface runoff
+          SoilSatExcAcc             = SoilSatExcAcc + max(0.0, SoilLiqWater(LoopInd1) - SoilEffPorosity(LoopInd1)) * &
+                                                      ThicknessSnowSoilLayer(LoopInd1)
+          SoilLiqWater(LoopInd1)    = min(SoilEffPorosity(LoopInd1), SoilLiqWater(LoopInd1))
+       endif
+       ! Peatland: skip clipping — forward/backward transfer handles over-saturation
     enddo
-    ! Peatland: add clipped excess back to top layer (no surface runoff)
-    if ( OptPeatlandPhysics == 1 .and. abs(SoilSatExcAcc) > 0.0 ) then
-       SoilLiqWater(1) = SoilLiqWater(1) + SoilSatExcAcc / ThicknessSnowSoilLayer(1)
-       SoilSatExcAcc   = 0.0
-    endif
 
     ! impermeable fraction due to frozen soil
     do LoopInd1 = 1, NumSoilLayer
@@ -514,12 +514,13 @@ contains
           DrainSoilBotAcc  = 0.0
           RunoffSurfaceAcc = 0.0
 
+          SatExcPeat = 0.0_kind_noahmp
           do IndIter = 1, NumIterSoilWat
              ! Peatland: skip RunoffSurface calls — all water infiltrates
              call SoilWaterDiffusionRichards(noahmp, MatLeft1, MatLeft2, MatLeft3, MatRight)
              call SoilMoistureSolver(noahmp, TimeStepFine, MatLeft1, MatLeft2, MatLeft3, MatRight)
-             ! Add saturation excess back to top layer (peatland: no surface runoff)
-             SoilLiqWater(1) = SoilLiqWater(1) + SoilSaturationExcess / abs(ThicknessSnowSoilLayer(1))
+             ! Accumulate saturation excess (negative: neg thickness convention)
+             SatExcPeat = SatExcPeat + SoilSaturationExcess
              DrainSoilBotAcc  = DrainSoilBotAcc + DrainSoilBot
           enddo
 
@@ -568,6 +569,8 @@ contains
                   (SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1))) * &
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
+          ! Add back saturation excess clipped by solver (SatExcPeat <= 0, neg thickness)
+          W_target_peat = W_target_peat - SatExcPeat
 
           ! DEBUG POST-RICHARDS: Write profile after Richards + runoff removal
           do LoopInd1 = 1, NumSoilLayer
