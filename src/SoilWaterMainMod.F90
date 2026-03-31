@@ -483,39 +483,28 @@ contains
           endif
           TimeStepFine = SoilTimeStep / NumIterSoilWat
 
-          ! Peatland: redistribute transpiration by unsaturated thickness.
-          ! Weight = fraction of each layer above the capillary fringe top,
-          ! providing a smooth transition as WTD crosses layer boundaries.
+          ! Peatland: redistribute transpiration uniformly over active layers
+          ! (weighted by thickness only, not conductivity).
+          ! Sum total transpiration, then redistribute over layers above SatTopInd.
           TranspSoil_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              TranspSoil_peat = TranspSoil_peat + TranspWatLossSoilMean(LoopInd1)
           enddo
-          if (TranspSoil_peat > 0.0_kind_noahmp) then
-             z_mid_peat = max(0.0_kind_noahmp, WaterTableDepth - ae_peat)
-             ! First pass: total unsaturated thickness
+          if (SatTopInd > 1 .and. TranspSoil_peat > 0.0_kind_noahmp) then
+             ! Compute total active thickness
              d_top_peat = 0.0_kind_noahmp
-             do LoopInd1 = 1, NumSoilLayer
-                if (LoopInd1 == 1) then
-                   h_peat = 0.0_kind_noahmp
-                else
-                   h_peat = abs(DepthSoilLayer(LoopInd1 - 1))
-                endif
-                d_top_peat = d_top_peat + max(0.0_kind_noahmp, &
-                    min(z_mid_peat, abs(DepthSoilLayer(LoopInd1))) - h_peat)
+             do LoopInd1 = 1, SatTopInd - 1
+                d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
              enddo
-             ! Second pass: redistribute proportionally
-             if (d_top_peat > 0.0_kind_noahmp) then
-                do LoopInd1 = 1, NumSoilLayer
-                   if (LoopInd1 == 1) then
-                      h_peat = 0.0_kind_noahmp
-                   else
-                      h_peat = abs(DepthSoilLayer(LoopInd1 - 1))
-                   endif
-                   head_shift_tmp = max(0.0_kind_noahmp, &
-                       min(z_mid_peat, abs(DepthSoilLayer(LoopInd1))) - h_peat)
-                   TranspWatLossSoilMean(LoopInd1) = TranspSoil_peat * head_shift_tmp / d_top_peat
-                enddo
-             endif
+             ! Redistribute uniformly by thickness over active layers
+             do LoopInd1 = 1, NumSoilLayer
+                if (LoopInd1 < SatTopInd) then
+                   TranspWatLossSoilMean(LoopInd1) = TranspSoil_peat * &
+                       abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
+                else
+                   TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+                endif
+             enddo
           endif
 
           ! --- Solve soil moisture via Richards ---
@@ -542,29 +531,24 @@ contains
           RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
-          ! Weighted by unsaturated thickness (continuous in WTD)
-          z_mid_peat = max(0.0_kind_noahmp, WaterTableDepth - ae_peat)
-          d_top_peat = 0.0_kind_noahmp
-          do LoopInd1 = 1, NumSoilLayer
-             if (LoopInd1 == 1) then
-                h_peat = 0.0_kind_noahmp
+          ! Exclude inactive layers (WT+capillary fringe above layer bottom)
+          SatTopInd = NumSoilLayer + 1
+          do LoopInd1 = NumSoilLayer, 1, -1
+             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WaterTableDepth ) then
+                SatTopInd = LoopInd1
              else
-                h_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+                exit
              endif
-             d_top_peat = d_top_peat + max(0.0_kind_noahmp, &
-                 min(z_mid_peat, abs(DepthSoilLayer(LoopInd1))) - h_peat)
+          enddo
+
+          d_top_peat = 0.0_kind_noahmp
+          do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
+             d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
           if (d_top_peat > 0.0_kind_noahmp) then
-             do LoopInd1 = 1, NumSoilLayer
-                if (LoopInd1 == 1) then
-                   h_peat = 0.0_kind_noahmp
-                else
-                   h_peat = abs(DepthSoilLayer(LoopInd1 - 1))
-                endif
-                head_shift_tmp = max(0.0_kind_noahmp, &
-                    min(z_mid_peat, abs(DepthSoilLayer(LoopInd1))) - h_peat)
+             do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
                 WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
-                             head_shift_tmp / d_top_peat
+                             abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
                 SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (abs(ThicknessSnowSoilLayer(LoopInd1))*1000.0)
              enddo
           endif

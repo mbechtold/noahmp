@@ -44,6 +44,8 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilWaterGrad               ! temporary soil moisture vertical gradient
     real(kind=kind_noahmp), allocatable, dimension(:) :: WaterExcess                 ! temporary excess water flux
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureTmp             ! temporary soil moisture
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilSuction                 ! Campbell suction head [m]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilHeadGrad                ! suction head gradient at interface [1]
 
 ! --------------------------------------------------------------------
     associate(                                                                             &
@@ -68,6 +70,8 @@ contains
               SoilWatDiffusivity        => noahmp%water%state%SoilWatDiffusivity          ,& ! out, soil water diffusivity [m2/s]
               FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout,   surface storage change [mm]
               f_soil                    => noahmp%water%state%f_soil                      ,& ! in, fraction of flux to soil [-] (Sy_soil/Sy_total)
+              SoilExpCoeffB             => noahmp%water%param%SoilExpCoeffB               ,& ! in, soil B parameter
+              SoilMoistureSat           => noahmp%water%param%SoilMoistureSat             ,& ! in, saturated soil moisture [m3/m3]
               DrainSoilBot              => noahmp%water%flux%DrainSoilBot                  & ! out, soil bottom drainage [m/s]
              )
 ! ----------------------------------------------------------------------
@@ -108,6 +112,21 @@ contains
           SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
     endif
 
+    ! Peatland: compute suction heads for head-based flux formulation
+    ! h_i = ae * (theta_i / theta_s)^(-b)
+    ! This eliminates the discretisation-error flux at hydrostatic equilibrium
+    ! that arises from D*d(theta)/dz + K with layers of unequal thickness.
+    if ( OptPeatlandPhysics == 1 ) then
+       if (.not. allocated(SoilSuction))  allocate(SoilSuction (1:NumSoilLayer))
+       if (.not. allocated(SoilHeadGrad)) allocate(SoilHeadGrad(1:NumSoilLayer))
+       SoilSuction(:)  = 0.0
+       SoilHeadGrad(:) = 0.0
+       do LoopInd = 1, NumSoilLayer
+          SoilSuction(LoopInd) = abs(SoilMatPotentialSat(1)) * &
+              (max(0.01, SoilMoistureTmp(LoopInd)/SoilMoistureSat(1)))**(-SoilExpCoeffB(1))
+       enddo
+    endif
+
     ! compute gradient and flux of soil water diffusion terms
     do LoopInd = 1, NumSoilLayer
        if ( LoopInd == 1 ) then
@@ -119,10 +138,11 @@ contains
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
           !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
+             SoilHeadGrad(LoopInd) = 2.0 * (SoilSuction(LoopInd+1) - SoilSuction(LoopInd)) / DepthSnowSoilTmp
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
+                WaterExcess(LoopInd) = SoilWatConductivity(LoopInd)*(SoilHeadGrad(LoopInd) + 1.0) - &
                                        InfilRateSfc + f_soil*TranspWatLossSoilMean(LoopInd) + f_soil*EvapSoilSfcLiqMean
              endif
           endif
@@ -136,11 +156,12 @@ contains
                                       TranspWatLossSoilMean(LoopInd)
           !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
+             SoilHeadGrad(LoopInd) = 2.0 * (SoilSuction(LoopInd+1) - SoilSuction(LoopInd)) / DepthSnowSoilTmp
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd) = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                       SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
+                WaterExcess(LoopInd) = SoilWatConductivity(LoopInd)*(SoilHeadGrad(LoopInd) + 1.0) - &
+                                       SoilWatConductivity(LoopInd-1)*(SoilHeadGrad(LoopInd-1) + 1.0) + &
                                        f_soil*TranspWatLossSoilMean(LoopInd)
              endif
           endif
@@ -179,8 +200,7 @@ contains
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) &
-                                 - SoilWatConductivity(LoopInd-1) + &
+                WaterExcess(LoopInd) = -SoilWatConductivity(LoopInd-1)*(SoilHeadGrad(LoopInd-1) + 1.0) + &
                                  f_soil*TranspWatLossSoilMean(LoopInd) + DrainSoilBot
              endif
           endif
@@ -232,8 +252,7 @@ contains
                 WaterExcess(TransInd) = -InfilRateSfc &
                     + f_soil*TranspWatLossSoilMean(TransInd) + f_soil*EvapSoilSfcLiqMean
              else
-                WaterExcess(TransInd) = -(SoilWatDiffusivity(TransInd-1)*SoilWaterGrad(TransInd-1)) &
-                    - SoilWatConductivity(TransInd-1) &
+                WaterExcess(TransInd) = -SoilWatConductivity(TransInd-1)*(SoilHeadGrad(TransInd-1) + 1.0) &
                     + f_soil*TranspWatLossSoilMean(TransInd)
              endif
              MatRight(TransInd) = WaterExcess(TransInd) / (-SoilThickTmp(TransInd))
@@ -258,6 +277,8 @@ contains
     deallocate(SoilWaterGrad   )
     deallocate(WaterExcess     )
     deallocate(SoilMoistureTmp )
+    if (allocated(SoilSuction))  deallocate(SoilSuction)
+    if (allocated(SoilHeadGrad)) deallocate(SoilHeadGrad)
 
     end associate
 
