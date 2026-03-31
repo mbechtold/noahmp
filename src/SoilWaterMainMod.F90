@@ -281,6 +281,10 @@ contains
        InfilRateSfc = InfilRateSfc + RunoffSurface
        RunoffSurface = 0.0
 
+       ! Add pre-clipped saturation excess back to infiltration
+       InfilRateSfc = InfilRateSfc + SoilSatExcAcc / SoilTimeStep
+       SoilSatExcAcc = 0.0
+
        ! Partition infiltration flux
        InfilRateSfc_FSW_change = (1.0_kind_noahmp - f_soil) * InfilRateSfc
        InfilRateSfc = f_soil * InfilRateSfc
@@ -355,8 +359,7 @@ contains
 
           ! No Richards iterations needed
           DrainSoilBot = 0.0
-          ! Route any pre-clipped saturation excess as surface runoff [mm/s]
-          RunoffSurface = SoilSatExcAcc * 1000.0 / SoilTimeStep
+          RunoffSurface = 0.0
 
        ! ================================================================
        ! RICHARDS PATH: WTD >= 0.3 m (Deep WT, full Richards)
