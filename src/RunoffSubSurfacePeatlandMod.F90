@@ -1,11 +1,16 @@
 module RunoffSubSurfacePeatlandMod
 
-!!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme - Enabled by (Chakraborty & Bechtold, 2025)
+!!! Calculate subsurface runoff using Ivanov-based Peatland Runoff Scheme
+!!! Introduced by Chakraborty & Bechtold (2025), WTD equilibrium revised by Bechtold (2026)
+!!!
+!!! Note: WaterTableDepth is diagnosed by FindWaterTable (microtopo-aware
+!!! bisection on SoilWaterStorageMicroTopoLite) in SoilWaterMainMod before
+!!! this subroutine is called.  The diagnosed WTD accounts for the
+!!! Gaussian microtopography distribution of Dettmann & Bechtold (2015).
 
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use WaterTableEquilibriumPeatMod, only : WaterTableEquilibriumPeat
 
   implicit none
 
@@ -14,7 +19,7 @@ contains
   subroutine RunoffSubSurfacePeatland(noahmp)
 
 ! ------------------------ Code history --------------------------------------------------
-! Modified to include Peatland-specific Ivanov-based runoff scheme (Chakraborty & Bechtold, 2025)
+! Peatland-specific Ivanov-based runoff scheme (Chakraborty & Bechtold, 2025; revised Bechtold, 2026)
 ! ----------------------------------------------------------------------------------------
 
     implicit none
@@ -31,17 +36,14 @@ contains
 ! --------------------------------------------------------------------
     associate(                                                           &
               SoilImpervFracMax => noahmp%water%state%SoilImpervFracMax ,& ! in,    maximum soil imperviousness fraction
-              WaterTableDepth   => noahmp%water%state%WaterTableDepth   ,& ! out,   water table depth [m]
+              WaterTableDepth   => noahmp%water%state%WaterTableDepth   ,& ! in,    water table depth [m] (already diagnosed)
               FSW_change         => noahmp%water%state%FSW_change        ,& ! inout, 
               RunoffSubsurface  => noahmp%water%flux%RunoffSubsurface    & ! out,   subsurface runoff [mm/s] 
              )
 ! ----------------------------------------------------------------------
 
-    ! Compute equilibrium water table depth
-    ! For very shallow water table detph, use PEATCLSM approximation outside of this routine
-    if (WaterTableDepth>0.1) then
-       call WaterTableEquilibriumPeat(noahmp)
-    endif
+    ! WaterTableDepth is diagnosed by FindWaterTable in SoilWaterMainMod
+    ! (microtopo-aware bisection) before this subroutine is called.
 
     ! ------------------------------------------
     ! Option 9: Ivanov-based Peatland Runoff Scheme (Chakraborty & Bechtold, 2025)
@@ -53,6 +55,7 @@ contains
     v_slope = 1.5e-08_dp       ! Slope factor for runoff generation [unitless]
 
     ! Compute transmissivity function (Ta) [m^2/s]
+    ! Clamp to -1.0 m (maximum allowed water above surface with microtopography)
     Ta = (Ksz_zero * (24.5_dp + 100.0_dp * max(-0.2449_dp, WaterTableDepth))**(1.0_dp - m_Ivanov)) / &
          (100.0_dp * (m_Ivanov - 1.0_dp))
 
@@ -62,10 +65,10 @@ contains
     ! Compute subsurface runoff using Peatland-specific equation
     RunoffSubsurface = (1.0_dp - SoilImpervFracMax) * BFLOW
     
-    RunoffSubsurface = min(0.0002,RunoffSubSurface)
+    !RunoffSubsurface = min(0.0002,RunoffSubSurface)
+    RunoffSubsurface = min(0.005,RunoffSubSurface)
     
-    ! Set FSW_change to zero for following calculations in SoilWaterMain and WaterBalanceError Check
-    FSW_change = 0.0
+    ! FSW_change is now computed in SoilWaterMainMod from WTD diagnosis (Bechtold, 2026)
 
     end associate
 

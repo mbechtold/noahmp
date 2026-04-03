@@ -108,6 +108,7 @@ contains
               TranspirationAcc        => noahmp%water%flux%TranspirationAcc          ,& ! inout, accumulated transpiration per soil timestep [mm]
               EvapGroundNetAcc        => noahmp%water%flux%EvapGroundNetAcc          ,& ! inout, accumulated net ground evaporation per soil timestep [mm]
               FSW_change              => noahmp%water%state%FSW_change               ,& ! in,   
+              FSW_peat_error          => noahmp%water%state%FSW_peat_error           ,& ! in, peatland numerical WB error [mm]
               WaterStorageTotEnd      => noahmp%water%state%WaterStorageTotEnd       ,& ! out,   total water storage [mm] at the end
               WaterBalanceError       => noahmp%water%state%WaterBalanceError         & ! out,   water balance error [mm] per time step
              )
@@ -127,9 +128,12 @@ contains
        enddo
        ! accumualted water change (only for canopy and snow during non-soil timestep)
        SfcWaterTotChgAcc = SfcWaterTotChgAcc + (WaterStorageTotEnd - WaterStorageTotBeg)  ! snow, canopy, and soil water change
-       if ( OptPeatlandPhysics == 1 ) then
+       ! FSW_change is only computed inside SoilWaterMain (soil timestep).
+       ! Between soil timesteps the variable retains its old value, so it
+       ! must be added only when FlagSoilProcess is true to avoid counting
+       ! the previous period's FSW_change at every main timestep.
+       if ( (OptPeatlandPhysics == 1) .and. (FlagSoilProcess .eqv. .true.) ) then
            SfcWaterTotChgAcc = SfcWaterTotChgAcc + FSW_change
-           write(*,*) "Checking Surface water storage: FSW_change"
        endif
        PrecipTotAcc      = PrecipTotAcc      + PrecipTotRefHeight * MainTimeStep          ! accumulated precip 
        EvapCanopyNetAcc  = EvapCanopyNetAcc  + EvapCanopyNet      * MainTimeStep          ! accumulated canopy evapo
@@ -157,6 +161,9 @@ contains
                                               IrrigationRateMicro*1000.0, IrrigationRateFlood*1000.0,              &
                                               EvapCanopyNetAcc, EvapGroundNetAcc, TranspirationAcc, RunoffSurface, &
                                               RunoffSubsurface, WaterTableDepth, TileDrain
+             if ( OptPeatlandPhysics == 1 ) then
+                write(*,'("  FSW_change=",f10.5," FSW_peat_error=",f10.5)') FSW_change, FSW_peat_error
+             endif
              stop "Error: Water budget problem in NoahMP LSM"
           endif
 #endif

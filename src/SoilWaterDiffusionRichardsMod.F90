@@ -34,6 +34,8 @@ contains
 
 ! local variable
     integer                                           :: LoopInd                     ! loop index
+    integer                                           :: SatTopInd                   ! topmost fully-saturated layer index
+    integer                                           :: TransInd                    ! transitional layer index (contains WT)
     real(kind=kind_noahmp)                            :: DepthSnowSoilTmp            ! temporary snow/soil layer depth [m]
     real(kind=kind_noahmp)                            :: SoilMoistTmpToWT            ! temporary soil moisture between bottom of the soil and water table
     real(kind=kind_noahmp)                            :: SoilMoistBotTmp             ! temporary soil moisture below bottom to calculate flux
@@ -42,6 +44,8 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilWaterGrad               ! temporary soil moisture vertical gradient
     real(kind=kind_noahmp), allocatable, dimension(:) :: WaterExcess                 ! temporary excess water flux
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilMoistureTmp             ! temporary soil moisture
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilSuction                 ! Campbell suction head [m]
+    real(kind=kind_noahmp), allocatable, dimension(:) :: SoilHeadGrad                ! suction head gradient at interface [1]
 
 ! --------------------------------------------------------------------
     associate(                                                                             &
@@ -51,6 +55,7 @@ contains
               OptRunoffSubsurface       => noahmp%config%nmlist%OptRunoffSubsurface       ,& ! in,  options for drainage and subsurface runoff
               OptPeatlandPhysics        => noahmp%config%nmlist%OptPeatlandPhysics        ,& ! in,  options for peatland physics
               SoilDrainSlope            => noahmp%water%param%SoilDrainSlope              ,& ! in,  slope index for soil drainage
+              SoilMatPotentialSat       => noahmp%water%param%SoilMatPotentialSat          ,& ! in,  saturated matric potential [m]
               InfilRateSfc              => noahmp%water%flux%InfilRateSfc                 ,& ! in,  infiltration rate at surface [m/s]
               EvapSoilSfcLiqMean        => noahmp%water%flux%EvapSoilSfcLiqMean           ,& ! in,  mean evaporation from soil surface [m/s]
               TranspWatLossSoilMean     => noahmp%water%flux%TranspWatLossSoilMean        ,& ! in,  mean transpiration water loss from soil layers [m/s]
@@ -64,8 +69,9 @@ contains
               SoilWatConductivity       => noahmp%water%state%SoilWatConductivity         ,& ! out, soil hydraulic conductivity [m/s]
               SoilWatDiffusivity        => noahmp%water%state%SoilWatDiffusivity          ,& ! out, soil water diffusivity [m2/s]
               FSW_change                => noahmp%water%state%FSW_change                  ,& ! inout,   surface storage change [mm]
-              f_soil                    => noahmp%water%state%f_soil                      ,& ! inout, fraction of flux in and out of soil [-]
-              AR1                       => noahmp%water%state%AR1                         ,& ! inout, fraction of flux in and out of soil [-]
+              f_soil                    => noahmp%water%state%f_soil                      ,& ! in, fraction of flux to soil [-] (Sy_soil/Sy_total)
+              SoilExpCoeffB             => noahmp%water%param%SoilExpCoeffB               ,& ! in, soil B parameter
+              SoilMoistureSat           => noahmp%water%param%SoilMoistureSat             ,& ! in, saturated soil moisture [m3/m3]
               DrainSoilBot              => noahmp%water%flux%DrainSoilBot                  & ! out, soil bottom drainage [m/s]
              )
 ! ----------------------------------------------------------------------
@@ -106,6 +112,21 @@ contains
           SoilMoistTmpToWT = SoilMoistureToWT * SoilLiqWater(NumSoilLayer) / SoilMoisture(NumSoilLayer)  !same liquid fraction as in the bottom layer
     endif
 
+    ! Peatland: compute suction heads for head-based flux formulation
+    ! h_i = ae * (theta_i / theta_s)^(-b)
+    ! This eliminates the discretisation-error flux at hydrostatic equilibrium
+    ! that arises from D*d(theta)/dz + K with layers of unequal thickness.
+    if ( OptPeatlandPhysics == 1 ) then
+       if (.not. allocated(SoilSuction))  allocate(SoilSuction (1:NumSoilLayer))
+       if (.not. allocated(SoilHeadGrad)) allocate(SoilHeadGrad(1:NumSoilLayer))
+       SoilSuction(:)  = 0.0
+       SoilHeadGrad(:) = 0.0
+       do LoopInd = 1, NumSoilLayer
+          SoilSuction(LoopInd) = abs(SoilMatPotentialSat(1)) * &
+              (max(0.01, SoilMoistureTmp(LoopInd)/SoilMoistureSat(1)))**(-SoilExpCoeffB(1))
+       enddo
+    endif
+
     ! compute gradient and flux of soil water diffusion terms
     do LoopInd = 1, NumSoilLayer
        if ( LoopInd == 1 ) then
@@ -117,11 +138,12 @@ contains
                                       InfilRateSfc + TranspWatLossSoilMean(LoopInd) + EvapSoilSfcLiqMean
           !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
+             SoilHeadGrad(LoopInd) = 2.0 * (SoilSuction(LoopInd+1) - SoilSuction(LoopInd)) / DepthSnowSoilTmp
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                            InfilRateSfc + f_soil*TranspWatLossSoilMean(LoopInd) + f_soil*EvapSoilSfcLiqMean
+                WaterExcess(LoopInd) = SoilWatConductivity(LoopInd)*(SoilHeadGrad(LoopInd) + 1.0) - &
+                                       InfilRateSfc + f_soil*TranspWatLossSoilMean(LoopInd) + f_soil*EvapSoilSfcLiqMean
              endif
           endif
        else if ( LoopInd < NumSoilLayer ) then
@@ -134,12 +156,13 @@ contains
                                       TranspWatLossSoilMean(LoopInd)
           !if (OptRunoffSubsurface == 9) then
           if ( OptPeatlandPhysics == 1 ) then
+             SoilHeadGrad(LoopInd) = 2.0 * (SoilSuction(LoopInd+1) - SoilSuction(LoopInd)) / DepthSnowSoilTmp
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd)      = SoilWatDiffusivity(LoopInd)*SoilWaterGrad(LoopInd) + SoilWatConductivity(LoopInd) - &
-                                      SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1) - SoilWatConductivity(LoopInd-1) + &
-                                      f_soil*TranspWatLossSoilMean(LoopInd)
+                WaterExcess(LoopInd) = SoilWatConductivity(LoopInd)*(SoilHeadGrad(LoopInd) + 1.0) - &
+                                       SoilWatConductivity(LoopInd-1)*(SoilHeadGrad(LoopInd-1) + 1.0) + &
+                                       f_soil*TranspWatLossSoilMean(LoopInd)
              endif
           endif
        else
@@ -177,7 +200,7 @@ contains
              if (f_soil < 0.000001) then
                 WaterExcess(LoopInd) = 0.0
              else
-                WaterExcess(LoopInd) = -(SoilWatDiffusivity(LoopInd-1)*SoilWaterGrad(LoopInd-1)) - SoilWatConductivity(LoopInd-1) + &
+                WaterExcess(LoopInd) = -SoilWatConductivity(LoopInd-1)*(SoilHeadGrad(LoopInd-1) + 1.0) + &
                                  f_soil*TranspWatLossSoilMean(LoopInd) + DrainSoilBot
              endif
           endif
@@ -202,12 +225,60 @@ contains
        MatRight(LoopInd) = WaterExcess(LoopInd) / (-SoilThickTmp(LoopInd))
     enddo
 
+    ! Peatland: decouple inactive layers from Richards domain.
+    ! A layer is inactive (decoupled) unless the WT + capillary fringe
+    ! is entirely below the layer bottom. This prevents the theta-based
+    ! discretization from generating spurious gravitational flux across
+    ! the poorly-resolved WT boundary.
+    if ( OptPeatlandPhysics == 1 ) then
+       ! Find topmost inactive layer using layer-bottom criterion.
+       SatTopInd = NumSoilLayer + 1
+       do LoopInd = NumSoilLayer, 1, -1
+          if ( abs(DepthSoilLayer(LoopInd)) >= WaterTableDepth ) then
+             SatTopInd = LoopInd
+          else
+             exit
+          endif
+       enddo
+
+       if ( SatTopInd <= NumSoilLayer ) then
+          TransInd = SatTopInd - 1
+
+          ! --- Transitional layer: remove bottom flux, keep top flux + sinks ---
+          if ( TransInd >= 1 ) then
+             if ( f_soil < 0.000001_kind_noahmp ) then
+                WaterExcess(TransInd) = 0.0
+             else if ( TransInd == 1 ) then
+                WaterExcess(TransInd) = -InfilRateSfc &
+                    + f_soil*TranspWatLossSoilMean(TransInd) + f_soil*EvapSoilSfcLiqMean
+             else
+                WaterExcess(TransInd) = -SoilWatConductivity(TransInd-1)*(SoilHeadGrad(TransInd-1) + 1.0) &
+                    + f_soil*TranspWatLossSoilMean(TransInd)
+             endif
+             MatRight(TransInd) = WaterExcess(TransInd) / (-SoilThickTmp(TransInd))
+             MatLeft3(TransInd) = 0.0
+             MatLeft2(TransInd) = -(MatLeft1(TransInd) + MatLeft3(TransInd))
+          endif
+
+          ! --- Saturated layers: completely inert (no flux, no transpiration) ---
+          do LoopInd = SatTopInd, NumSoilLayer
+             WaterExcess(LoopInd) = 0.0
+             MatRight(LoopInd)    = 0.0
+             MatLeft1(LoopInd)    = 0.0
+             MatLeft2(LoopInd)    = 0.0
+             MatLeft3(LoopInd)    = 0.0
+          enddo
+       endif
+    endif
+
     ! deallocate local arrays to avoid memory leaks
     deallocate(DepthSnowSoilInv)
     deallocate(SoilThickTmp    )
     deallocate(SoilWaterGrad   )
     deallocate(WaterExcess     )
     deallocate(SoilMoistureTmp )
+    if (allocated(SoilSuction))  deallocate(SoilSuction)
+    if (allocated(SoilHeadGrad)) deallocate(SoilHeadGrad)
 
     end associate
 

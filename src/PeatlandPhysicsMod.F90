@@ -6,13 +6,6 @@ module PeatlandPhysicsMod
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use RunoffSubSurfacePeatlandMod,       only : RunoffSubSurfacePeatland
-  use MicroTopoCorrectionMod,            only : MicroTopoCorrection
-  use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
-  use SoilMoistureSolverMod,             only : SoilMoistureSolver
-  use TileDrainageSimpleMod,             only : TileDrainageSimple
-  use TileDrainageHooghoudtMod,          only : TileDrainageHooghoudt
-  use WaterTableEquilibriumPeatMod,      only : WaterTableEquilibriumPeat
 
   implicit none
 
@@ -38,12 +31,12 @@ contains
 
 
     ! Set peatland-specific physics option for runoff and transpiration
-    write(*,*) "DEBUG: OptPeatlandPhysics =", OptPeatlandPhysics
+    !write(*,*) "DEBUG: OptPeatlandPhysics =", OptPeatlandPhysics
 
     if ( OptPeatlandPhysics == 1 ) then
         OptRunoffSubsurface = 9
         OptSoilWaterTranspiration = 4
-        write(*,*) "Peatland Physics option working with OptRunoffSubsurface option 9 and OptSoilWaterTranspiration option 4"
+        !write(*,*) "Peatland Physics option working with OptRunoffSubsurface option 9 and OptSoilWaterTranspiration option 4"
     endif
     
     end associate
