@@ -387,6 +387,15 @@ contains
              endif
           enddo
 
+          ! Safety: suppress all water extraction when WTD > 2 m
+          if ( WaterTableDepth > 2.0_kind_noahmp ) then
+             do LoopInd1 = 1, NumSoilLayer
+                TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+             enddo
+             EvapGroundNet    = 0.0_kind_noahmp
+             RunoffSubsurface = 0.0_kind_noahmp
+          endif
+
           do LoopInd1 = 1, NumSoilLayer
              if (LoopInd1 == 1) then
                 d_top_peat = 0.0_kind_noahmp
@@ -483,28 +492,43 @@ contains
           endif
           TimeStepFine = SoilTimeStep / NumIterSoilWat
 
-          ! Peatland: redistribute transpiration uniformly over active layers
-          ! (weighted by thickness only, not conductivity).
-          ! Sum total transpiration, then redistribute over layers above SatTopInd.
+          ! Peatland: restrict transpiration to active layers, preserve
+          ! original root-fraction weighting, scale to keep total unchanged.
           TranspSoil_peat = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              TranspSoil_peat = TranspSoil_peat + TranspWatLossSoilMean(LoopInd1)
           enddo
           if (SatTopInd > 1 .and. TranspSoil_peat > 0.0_kind_noahmp) then
-             ! Compute total active thickness
+             ! Sum transpiration over active layers only
              d_top_peat = 0.0_kind_noahmp
              do LoopInd1 = 1, SatTopInd - 1
-                d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
+                d_top_peat = d_top_peat + TranspWatLossSoilMean(LoopInd1)
              enddo
-             ! Redistribute uniformly by thickness over active layers
-             do LoopInd1 = 1, NumSoilLayer
-                if (LoopInd1 < SatTopInd) then
-                   TranspWatLossSoilMean(LoopInd1) = TranspSoil_peat * &
-                       abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
-                else
-                   TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
-                endif
-             enddo
+             ! Scale active layers to preserve total; zero inactive layers
+             if (d_top_peat > 0.0_kind_noahmp) then
+                do LoopInd1 = 1, NumSoilLayer
+                   if (LoopInd1 < SatTopInd) then
+                      TranspWatLossSoilMean(LoopInd1) = TranspWatLossSoilMean(LoopInd1) * &
+                          (TranspSoil_peat / d_top_peat)
+                   else
+                      TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+                   endif
+                enddo
+             else
+                ! All active-layer transpiration is zero: distribute uniformly
+                d_top_peat = 0.0_kind_noahmp
+                do LoopInd1 = 1, SatTopInd - 1
+                   d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
+                enddo
+                do LoopInd1 = 1, NumSoilLayer
+                   if (LoopInd1 < SatTopInd) then
+                      TranspWatLossSoilMean(LoopInd1) = TranspSoil_peat * &
+                          abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
+                   else
+                      TranspWatLossSoilMean(LoopInd1) = 0.0_kind_noahmp
+                   endif
+                enddo
+             endif
           endif
 
           ! --- Solve soil moisture via Richards ---
@@ -541,14 +565,15 @@ contains
              endif
           enddo
 
-          d_top_peat = 0.0_kind_noahmp
+          SoilWatConductAcc = 0.0_kind_noahmp
           do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
-             d_top_peat = d_top_peat + abs(ThicknessSnowSoilLayer(LoopInd1))
+             SoilWatConductAcc = SoilWatConductAcc + &
+                 SoilWatConductivity(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
-          if (d_top_peat > 0.0_kind_noahmp) then
+          if (SoilWatConductAcc > 0.0_kind_noahmp) then
              do LoopInd1 = 1, min(SatTopInd - 1, NumSoilLayer)
                 WaterRemove = f_soil * RunoffSubsurface * SoilTimeStep * &
-                             abs(ThicknessSnowSoilLayer(LoopInd1)) / d_top_peat
+                    (SoilWatConductivity(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))) / SoilWatConductAcc
                 SoilLiqWater(LoopInd1) = SoilLiqWater(LoopInd1) - WaterRemove / (abs(ThicknessSnowSoilLayer(LoopInd1))*1000.0)
              enddo
           endif
