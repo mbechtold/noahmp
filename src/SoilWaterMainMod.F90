@@ -22,19 +22,14 @@ module SoilWaterMainMod
   use RunoffSubSurfacePeatlandMod,       only : RunoffSubSurfacePeatland
   use MicroTopoCorrectionMod,            only : MicroTopoCorrection
   use PeatlandPhysicsMod,                only : ApplyPeatlandPhysics
-  use PeatMicroTopoMod,                  only : FloodedFrac, FsoilMicroTopo, &
-                                                 EquilibriumSMFlat,           &
+  use PeatMicroTopoMod,                  only : FloodedFrac,                 &
                                                  EquilibriumSMMicroTopo,      &
-                                                 HeadShiftFromThetaFlat,      &
                                                  HeadShiftFromThetaMicro,     &
                                                  FindWaterTable,              &
                                                  FindWaterTableTotal,         &
                                                  SurfaceWaterStorage,         &
                                                  SoilWaterStorageMicroTopoLite, &
-                                                 ThetaFromHeadShiftFlat,      &
                                                  ThetaFromHeadShiftMicro,     &
-                                                 FindWaterTableFlat,          &
-                                                 EquilibriumSMMicroTopo,      &
                                                  z_trunc
   use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
   use SoilMoistureSolverMod,             only : SoilMoistureSolver
@@ -476,15 +471,6 @@ contains
              SoilLiqWater1D_bef(LoopInd1) = SoilLiqWater(LoopInd1)
           enddo
 
-          ! DEBUG FORWARD: Write full state after forward transfer
-          write(*,*) 'DEBUG FORWARD: WTD_begin=', WaterTableDepth, ' SatTopInd=', SatTopInd
-          do LoopInd1 = 1, NumSoilLayer
-             write(*,*) 'DEBUG FORWARD L', LoopInd1, &
-                        ' theta_orig_micro=', SoilLiqWaterOrig(LoopInd1), &
-                        ' HeadShiftMicro=', HeadShiftMicro(LoopInd1), &
-                        ' theta_flat_1D=', SoilLiqWater1D_bef(LoopInd1)
-          enddo
-
           ! --- Determine iteration times ---
           NumIterSoilWat = 3
           if ( (InfilRateSfc*SoilTimeStep) > (ThicknessSnowSoilLayer(1)*SoilMoistureSat(1)) ) then
@@ -595,14 +581,6 @@ contains
                  abs(ThicknessSnowSoilLayer(LoopInd1))
           enddo
 
-          ! DEBUG POST-RICHARDS: Write profile after Richards + runoff removal
-          do LoopInd1 = 1, NumSoilLayer
-             write(*,*) 'DEBUG POST-RICHARDS L', LoopInd1, &
-                        ' theta_flat_post=', SoilLiqWater(LoopInd1), &
-                        ' delta_richards=', SoilLiqWater(LoopInd1) - SoilLiqWater1D_bef(LoopInd1)
-          enddo
-          write(*,*) 'DEBUG POST-RICHARDS: W_target=', W_target_peat
-
           ! --- Backward transfer: two-WTD + multiplicative lambda ---
 
           ! (b) WTD_end_micro: micro-aware WTD from W_target (for diagnostics)
@@ -640,15 +618,6 @@ contains
                 head_shift_tmp = (WTD_end_micro - z_mid_peat) - h_peat
                 HeadShiftFlat(LoopInd1) = max(-head_shift_cap, min(head_shift_cap, head_shift_tmp))
              endif
-          enddo
-
-          ! DEBUG: Write head shift diagnostics
-          write(*,*) 'DEBUG BACKWARD: WTD_end_micro=', WTD_end_micro, &
-                     ' W_target=', W_target_peat
-          write(*,*) 'DEBUG BACKWARD: SatTopInd=', SatTopInd
-          do LoopInd1 = 1, NumSoilLayer
-             write(*,*) 'DEBUG HeadShiftFlat Layer', LoopInd1, &
-                        HeadShiftFlat(LoopInd1), ' theta_flat=', SoilLiqWater(LoopInd1)
           enddo
 
           ! (f) Bisect on WTD_ref to enforce water balance:
@@ -698,12 +667,9 @@ contains
              endif
           enddo
 
-          write(*,*) 'DEBUG BACKWARD: W_lo=', W_lo_peat, ' W_hi=', W_hi_peat, ' W_target=', W_target_peat
-
           ! Check bracket
           if ( (W_lo_peat - W_target_peat) * (W_hi_peat - W_target_peat) > 0.0_kind_noahmp ) then
              WTD_ref_peat = WTD_end_micro
-             write(*,*) 'DEBUG BACKWARD: WTD_ref bracket failure, using WTD_end_micro'
           else
              ! Bisection on WTD_ref
              do IterWTD = 1, 50
@@ -738,9 +704,6 @@ contains
              WTD_ref_peat = 0.5_kind_noahmp * (WTD_ref_lo + WTD_ref_hi)
           endif
 
-          write(*,*) 'DEBUG BACKWARD: WTD_ref_peat=', WTD_ref_peat, &
-                     ' WTD_end_micro=', WTD_end_micro, ' WTD_end_flat=', WTD_end_flat
-
           ! (g) Store WTD_end_micro as the diagnostic water table depth
           WaterTableDepth = WTD_end_micro
           z_wt_end = -WTD_end_micro
@@ -767,22 +730,6 @@ contains
           W_soil_check = 0.0_kind_noahmp
           do LoopInd1 = 1, NumSoilLayer
              W_soil_check = W_soil_check + SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
-          enddo
-
-          ! DEBUG FINAL: Compare backward result with equilibrium at WTD_end_micro
-          do LoopInd1 = 1, NumSoilLayer
-             if (LoopInd1 == 1) then
-                d_top_peat = 0.0_kind_noahmp
-             else
-                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
-             endif
-             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
-             write(*,*) 'DEBUG FINAL L', LoopInd1, &
-                        ' theta_micro_final=', SoilLiqWater(LoopInd1), &
-                        ' theta_equil_micro=', EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-                            WTD_end_micro, thetas_peat, ae_peat, bb_peat), &
-                        ' diff=', SoilLiqWater(LoopInd1) - EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
-                            WTD_end_micro, thetas_peat, ae_peat, bb_peat)
           enddo
 
           ! --- Saturation overflow cascade ---
@@ -832,8 +779,6 @@ contains
           FSW_change = FSW_change_flux
 
           FSW_peat_error = (W_soil_check - W_target_peat) * 1000.0_kind_noahmp
-          write(*,*) 'DEBUG BACKWARD: FSW_peat_error [mm]=', FSW_peat_error, &
-                     ' W_soil_check=', W_soil_check
 
           ! Update FloodedFraction from micro-aware WTD
           FloodedFraction = FloodedFrac(z_wt_end)

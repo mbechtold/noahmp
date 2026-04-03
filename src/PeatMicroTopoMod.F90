@@ -401,131 +401,6 @@ contains
   end function SoilWaterStorageMicroTopoLite
 
   !========================================================================
-  ! Total water storage [m] = soil + surface for water table at z_wt
-  ! z_col_bot: soil column bottom depth [m], positive downward
-  !========================================================================
-  function TotalWaterStorageMicroTopo(z_wt, theta_s, h_e, b_camp, z_col_bot) result(W_total)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: z_wt, theta_s, h_e, b_camp, z_col_bot
-    real(kind=kind_noahmp) :: W_total
-
-    W_total = SoilWaterStorageMicroTopo(z_wt, theta_s, h_e, b_camp, z_col_bot) + &
-              SurfaceWaterStorage(z_wt)
-
-  end function TotalWaterStorageMicroTopo
-
-  !========================================================================
-  ! Effective soil moisture for a layer [z_bot, z_top] (both relative to
-  ! mean surface, z positive upward) accounting for microtopography
-  !
-  ! theta_eff = (1 / layer_thickness) * integral from z_bot to z_top of
-  !             (1 - F_s(z)) * theta(z_wt - z) dz
-  !            / (1 / layer_thickness) * integral from z_bot to z_top of
-  !             (1 - F_s(z)) dz
-  !
-  ! Actually, for comparison with flat-surface layer moisture, we want:
-  ! theta_eff = integral of (1-Fs(z))*theta(zwt-z) dz / integral of (1-Fs(z)) dz
-  ! over the layer range, so it represents average moisture of the soil
-  ! fraction only.
-  !
-  ! But for total water [m] in the layer (soil + surface), we return:
-  ! W_layer = integral of [(1-Fs(z))*theta(zwt-z) + Fs(z)*I(z<zwt)] dz
-  ! where I(z<zwt) = 1 when z < zwt (surface water present)
-  !
-  ! For NoahMP compatibility, we return:
-  ! theta_eff_flat = W_layer / layer_thickness
-  ! This is what should be compared with satellite top-10cm data.
-  !========================================================================
-  function EffectiveSoilMoistureLayer(z_bot, z_top, z_wt, theta_s, h_e, b_camp) result(theta_eff)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: z_bot, z_top, z_wt, theta_s, h_e, b_camp
-    real(kind=kind_noahmp) :: theta_eff
-    real(kind=kind_noahmp) :: layer_thick, z_lo, z_hi, z_mid, z_half, z_pt
-    real(kind=kind_noahmp) :: h_pt, soil_frac, theta_val, w_soil, w_surface
-    integer :: k
-
-    if (.not. gl_initialized) call InitGaussLegendre()
-
-    layer_thick = z_top - z_bot
-    if (layer_thick <= 0.0_kind_noahmp) then
-       theta_eff = 0.0_kind_noahmp
-       return
-    endif
-
-    ! Clamp integration limits to microtopography range
-    z_lo = max(z_bot, -z_trunc)
-    z_hi = min(z_top,  z_trunc)
-
-    if (z_lo >= z_hi) then
-       ! Layer entirely outside microtopography range
-       if (z_bot >= z_trunc) then
-          ! Above all hummocks: no soil, just surface water if z_wt > z_top
-          if (z_wt > z_bot) then
-             theta_eff = 1.0_kind_noahmp  ! open water
-          else
-             theta_eff = 0.0_kind_noahmp
-          endif
-       else
-          ! Below all hollows: all soil
-          h_pt = z_wt - 0.5_kind_noahmp*(z_bot+z_top)
-          theta_eff = theta_campbell(h_pt, theta_s, h_e, b_camp)
-       endif
-       return
-    endif
-
-    z_mid  = 0.5_kind_noahmp * (z_hi + z_lo)
-    z_half = 0.5_kind_noahmp * (z_hi - z_lo)
-
-    w_soil    = 0.0_kind_noahmp
-    w_surface = 0.0_kind_noahmp
-
-    do k = 1, n_gl
-       z_pt = z_mid + z_half * gl_nodes(k)
-       soil_frac = 1.0_kind_noahmp - Fs_cdf(z_pt)
-       h_pt = z_wt - z_pt
-       theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
-
-       ! Soil water contribution
-       w_soil = w_soil + gl_weights(k) * soil_frac * theta_val
-
-       ! Surface water contribution: where z_pt < z_wt and no soil
-       if (z_pt < z_wt) then
-          w_surface = w_surface + gl_weights(k) * Fs_cdf(z_pt)
-       endif
-    enddo
-    w_soil    = w_soil * z_half
-    w_surface = w_surface * z_half
-
-    ! Add contributions from parts of the layer below -z_trunc (soil_frac ≈ 1)
-    if (z_bot < -z_trunc) then
-       ! From z_bot to -z_trunc: soil_frac ≈ 1 (Fs negligible)
-       z_mid  = 0.5_kind_noahmp * (-z_trunc + z_bot)
-       z_half = 0.5_kind_noahmp * (-z_trunc - z_bot)
-       do k = 1, n_gl
-          z_pt = z_mid + z_half * gl_nodes(k)
-          h_pt = z_wt - z_pt
-          theta_val = theta_campbell(h_pt, theta_s, h_e, b_camp)
-          w_soil = w_soil + gl_weights(k) * theta_val * z_half
-       enddo
-    endif
-
-    ! Add contributions from parts of the layer above +z_trunc (no soil, F_s=1)
-    if (z_top > z_trunc) then
-       ! From z_trunc to z_top: no soil (all surface), surface water if z_wt > z
-       if (z_wt > z_trunc) then
-          w_surface = w_surface + min(z_wt, z_top) - z_trunc
-       endif
-    endif
-
-    ! Total water in layer [m] divided by layer thickness -> effective theta
-    theta_eff = (w_soil + w_surface) / layer_thick
-
-    ! Clamp for safety
-    theta_eff = max(0.0_kind_noahmp, min(1.0_kind_noahmp, theta_eff))
-
-  end function EffectiveSoilMoistureLayer
-
-  !========================================================================
   ! Specific yield of soil component (Eq. 5 / Eq. 6 in D&B 2015)
   ! Sy_soil for water level change from z_l to z_u, column-averaged.
   !
@@ -612,21 +487,6 @@ contains
     sy = max(0.0_kind_noahmp, min(1.0_kind_noahmp, sy))
 
   end function SysurfaceMicroTopo
-
-  !========================================================================
-  ! Total specific yield Sy = Sy_soil + Sy_surface (Eq. 2 in D&B 2015)
-  !========================================================================
-  function SytotalMicroTopo(z_l, z_u, theta_s, h_e, b_camp) result(sy)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: z_l, z_u, theta_s, h_e, b_camp
-    real(kind=kind_noahmp) :: sy
-
-    sy = SysoilMicroTopo(z_l, z_u, theta_s, h_e, b_camp) + &
-         SysurfaceMicroTopo(z_l, z_u)
-
-    sy = max(1.0e-6_kind_noahmp, min(1.0_kind_noahmp, sy))
-
-  end function SytotalMicroTopo
 
   !========================================================================
   ! Fraction of flux going to soil (f_soil) based on Sy decomposition
@@ -1144,21 +1004,6 @@ contains
   end function EquilibriumSMMicroTopo
 
   !========================================================================
-  ! Layer-mean soil moisture for a FLAT column after applying a uniform
-  ! pressure-head anomaly to the hydrostatic equilibrium profile.
-  ! A positive head_shift wets the layer and is equivalent to shifting the
-  ! reference water table upward by the same amount.
-  !========================================================================
-  function ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp) result(theta_shift)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: d_top, d_bot, WTD_ref, head_shift, theta_s, h_e, b_camp
-    real(kind=kind_noahmp) :: theta_shift
-
-    theta_shift = EquilibriumSMFlat(d_top, d_bot, WTD_ref - head_shift, theta_s, h_e, b_camp)
-
-  end function ThetaFromHeadShiftFlat
-
-  !========================================================================
   ! Column-averaged soil moisture for the microtopography-aware column
   ! after applying a uniform pressure-head anomaly to the hydrostatic
   ! equilibrium profile.
@@ -1171,51 +1016,6 @@ contains
     theta_shift = EquilibriumSMMicroTopo(d_top, d_bot, WTD_ref - head_shift, theta_s, h_e, b_camp)
 
   end function ThetaFromHeadShiftMicro
-
-  !========================================================================
-  ! Diagnose the uniform pressure-head anomaly that reproduces a target
-  ! layer-mean soil moisture in the flat 1D column.
-  !========================================================================
-  function HeadShiftFromThetaFlat(theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp) result(head_shift)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: theta_target, d_top, d_bot, WTD_ref, theta_s, h_e, b_camp
-    real(kind=kind_noahmp) :: head_shift
-    real(kind=kind_noahmp) :: shift_lo, shift_hi, shift_mid
-    real(kind=kind_noahmp) :: theta_lo, theta_hi, theta_mid, theta_tgt
-    integer :: iter
-    integer, parameter :: max_iter = 50
-    real(kind=kind_noahmp), parameter :: tol = 1.0e-8_kind_noahmp
-
-    shift_lo = -(d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e)
-    shift_hi =   d_bot + z_trunc + max(WTD_ref, 0.0_kind_noahmp) + 10.0_kind_noahmp * h_e
-
-    theta_lo = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_lo, theta_s, h_e, b_camp)
-    theta_hi = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_hi, theta_s, h_e, b_camp)
-    theta_tgt = max(theta_lo, min(theta_hi, theta_target))
-
-    if (theta_tgt <= theta_lo + tol) then
-       head_shift = shift_lo
-       return
-    endif
-    if (theta_tgt >= theta_hi - tol) then
-       head_shift = shift_hi
-       return
-    endif
-
-    do iter = 1, max_iter
-       shift_mid = 0.5_kind_noahmp * (shift_lo + shift_hi)
-       theta_mid = ThetaFromHeadShiftFlat(d_top, d_bot, WTD_ref, shift_mid, theta_s, h_e, b_camp)
-       if (abs(theta_mid - theta_tgt) < tol) exit
-       if (theta_mid < theta_tgt) then
-          shift_lo = shift_mid
-       else
-          shift_hi = shift_mid
-       endif
-    enddo
-
-    head_shift = 0.5_kind_noahmp * (shift_lo + shift_hi)
-
-  end function HeadShiftFromThetaFlat
 
   !========================================================================
   ! Diagnose the uniform pressure-head anomaly that reproduces a target
@@ -1261,66 +1061,5 @@ contains
     head_shift = 0.5_kind_noahmp * (shift_lo + shift_hi)
 
   end function HeadShiftFromThetaMicro
-
-  !========================================================================
-  ! Find water table depth from flat-surface soil moisture deficit.
-  !
-  ! Given the total column deficit [m] computed from a flat 1D soil
-  ! moisture profile:
-  !   deficit = sum_layers( (theta_s - SM(i)) * dz(i) )
-  !
-  ! finds WTD such that SingleColumnDeficit(WTD) = deficit.
-  !
-  ! Uses bisection on the monotonically increasing SingleColumnDeficit.
-  !
-  ! deficit:   target deficit [m], must be >= 0
-  ! z_col_bot: maximum column depth [m], positive downward
-  ! Returns:   WTD [m], positive downward (0 = surface, z_col_bot = bottom)
-  !========================================================================
-  function FindWaterTableFlat(deficit, theta_s, h_e, b_camp, z_col_bot) result(WTD)
-    implicit none
-    real(kind=kind_noahmp), intent(in) :: deficit, theta_s, h_e, b_camp, z_col_bot
-    real(kind=kind_noahmp) :: WTD
-    real(kind=kind_noahmp) :: zwt_lo, zwt_hi, zwt_mid, def_mid
-    integer :: iter
-    integer, parameter :: max_iter = 60
-    real(kind=kind_noahmp), parameter :: tol = 1.0e-5_kind_noahmp
-
-    ! If deficit is negligible, water table is at the surface
-    if (deficit <= tol) then
-       WTD = 0.0_kind_noahmp
-       return
-    endif
-
-    ! Bisection range: WTD from 0 (surface) to z_col_bot (column bottom)
-    zwt_lo = 0.0_kind_noahmp
-    zwt_hi = z_col_bot
-
-    ! Check if deficit exceeds column capacity
-    if (SingleColumnDeficit(zwt_hi, theta_s, h_e, b_camp) < deficit) then
-       WTD = zwt_hi
-       return
-    endif
-
-    ! Bisection
-    do iter = 1, max_iter
-       zwt_mid = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
-       def_mid = SingleColumnDeficit(zwt_mid, theta_s, h_e, b_camp)
-
-       if (abs(def_mid - deficit) < tol .or. (zwt_hi - zwt_lo) < tol) then
-          WTD = zwt_mid
-          return
-       endif
-
-       if (def_mid < deficit) then
-          zwt_lo = zwt_mid   ! deficit too small → go deeper
-       else
-          zwt_hi = zwt_mid   ! deficit too large → go shallower
-       endif
-    enddo
-
-    WTD = 0.5_kind_noahmp * (zwt_lo + zwt_hi)
-
-  end function FindWaterTableFlat
 
 end module PeatMicroTopoMod

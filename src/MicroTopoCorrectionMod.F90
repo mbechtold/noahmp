@@ -72,24 +72,4 @@ contains
 
   end subroutine MicroTopoCorrection
 
-  ! --------------------------------------------------------------------
-  ! Surface water storage [mm] from Dettmann & Bechtold (2015)
-  ! Gaussian microtopography theory.
-  ! Convenience wrapper for external callers (e.g. LIS TWS diagnostic).
-  !
-  ! Input:  wtd         - water table depth [m], NoahMP convention (positive downward)
-  ! Output: storage_mm  - surface water storage [mm]
-  ! --------------------------------------------------------------------
-  subroutine CalcSurfaceWaterStorage_mm(wtd, storage_mm)
-    implicit none
-    real, intent(in)  :: wtd            ! water table depth [m], positive downward
-    real, intent(out) :: storage_mm     ! surface water storage [mm]
-
-    ! Convert to D&B convention (z positive upward) and call physics routine
-    ! SurfaceWaterStorage returns meters; multiply by 1000 for mm
-    if (.not. gl_initialized) call InitGaussLegendre()
-    storage_mm = real(SurfaceWaterStorage(-real(wtd, kind_noahmp))) * 1000.0
-
-  end subroutine CalcSurfaceWaterStorage_mm
-
 end module MicroTopoCorrectionMod

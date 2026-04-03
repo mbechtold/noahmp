@@ -7,7 +7,6 @@ module SoilWaterTranspirationMod
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use PeatlandPhysicsMod,                only : ApplyPeatlandPhysics
  
   implicit none
  

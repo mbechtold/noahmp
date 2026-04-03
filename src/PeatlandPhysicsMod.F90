@@ -6,13 +6,6 @@ module PeatlandPhysicsMod
   use Machine
   use NoahmpVarType
   use ConstantDefineMod
-  use RunoffSubSurfacePeatlandMod,       only : RunoffSubSurfacePeatland
-  use MicroTopoCorrectionMod,            only : MicroTopoCorrection
-  use SoilWaterDiffusionRichardsMod,     only : SoilWaterDiffusionRichards
-  use SoilMoistureSolverMod,             only : SoilMoistureSolver
-  use TileDrainageSimpleMod,             only : TileDrainageSimple
-  use TileDrainageHooghoudtMod,          only : TileDrainageHooghoudt
-  use WaterTableEquilibriumPeatMod,      only : WaterTableEquilibriumPeat
 
   implicit none
 
