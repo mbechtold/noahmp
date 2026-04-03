@@ -234,7 +234,7 @@ contains
        ! Find topmost inactive layer using layer-bottom criterion.
        SatTopInd = NumSoilLayer + 1
        do LoopInd = NumSoilLayer, 1, -1
-          if ( abs(DepthSoilLayer(LoopInd)) + abs(SoilMatPotentialSat(1)) >= WaterTableDepth ) then
+          if ( abs(DepthSoilLayer(LoopInd)) >= WaterTableDepth ) then
              SatTopInd = LoopInd
           else
              exit

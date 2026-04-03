@@ -376,11 +376,11 @@ contains
           HeadShiftFlat(:)  = 0.0_kind_noahmp
           head_shift_cap    = 1.0_kind_noahmp
 
-          ! Active/inactive: layer is inactive (decoupled) unless WT+capillary
-          ! fringe is entirely below the layer bottom.
+          ! Active/inactive: layer is inactive (decoupled) when the water
+          ! table is above the layer bottom.
           SatTopInd = NumSoilLayer + 1
           do LoopInd1 = NumSoilLayer, 1, -1
-             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WaterTableDepth ) then
+             if ( abs(DepthSoilLayer(LoopInd1)) >= WaterTableDepth ) then
                 SatTopInd = LoopInd1
              else
                 exit
@@ -531,10 +531,10 @@ contains
           RunoffSurface = RunoffSurface * 1000.0 + SoilSatExcAcc * 1000.0 / SoilTimeStep
 
           ! --- Remove f_soil fraction of subsurface runoff from soil ---
-          ! Exclude inactive layers (WT+capillary fringe above layer bottom)
+          ! Exclude inactive layers (WT above layer bottom)
           SatTopInd = NumSoilLayer + 1
           do LoopInd1 = NumSoilLayer, 1, -1
-             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WaterTableDepth ) then
+             if ( abs(DepthSoilLayer(LoopInd1)) >= WaterTableDepth ) then
                 SatTopInd = LoopInd1
              else
                 exit
@@ -588,7 +588,7 @@ contains
           ! (c) Recompute SatTopInd at WTD_end_micro for backward transfer
           SatTopInd = NumSoilLayer + 1
           do LoopInd1 = NumSoilLayer, 1, -1
-             if ( abs(DepthSoilLayer(LoopInd1)) + ae_peat >= WTD_end_micro ) then
+             if ( abs(DepthSoilLayer(LoopInd1)) >= WTD_end_micro ) then
                 SatTopInd = LoopInd1
              else
                 exit
