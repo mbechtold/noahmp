@@ -121,6 +121,10 @@ contains
     real(kind=kind_noahmp), allocatable, dimension(:) :: SoilLiqGap    ! per-layer change in forward transfer [m3/m3]
    real(kind=kind_noahmp), allocatable, dimension(:) :: HeadShiftMicro ! microtopography head anomalies [m]
    real(kind=kind_noahmp), allocatable, dimension(:) :: HeadShiftFlat  ! flat-column head anomalies [m]
+   real(kind=kind_noahmp)            :: WTD_max_peat                   ! max WTD cap = z_col_bot_peat [m]
+   real(kind=kind_noahmp)            :: WTD_original                   ! WTD before capping [m]
+   real(kind=kind_noahmp)            :: W_soil_before_cap              ! total soil water before cap [m]
+   real(kind=kind_noahmp)            :: W_soil_after_cap               ! total soil water after cap [m]
 
 ! --------------------------------------------------------------------
     associate(                                                                       &
@@ -227,6 +231,7 @@ contains
        ae_peat        = abs(SoilMatPotentialSat(1))
        bb_peat        = SoilExpCoeffB(1)
        z_col_bot_peat = abs(DepthSoilLayer(NumSoilLayer))
+       WTD_max_peat   = z_col_bot_peat
 
        ! Compute total soil water [m]
        W_soil_peat = 0.0_kind_noahmp
@@ -791,6 +796,49 @@ contains
        ! Common final steps: unit conversion, SoilMoisture, deallocation
        ! (FSW_change, FloodedFraction, WTD already set by each path)
        ! ================================================================
+
+       ! --- WTD cap: prevent WTD from exceeding soil column bottom ---
+       if ( WaterTableDepth > WTD_max_peat ) then
+          ! Compute total soil water before cap [m]
+          W_soil_before_cap = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_before_cap = W_soil_before_cap + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+
+          WTD_original    = WaterTableDepth
+          WaterTableDepth = WTD_max_peat
+          z_wt_end        = -WaterTableDepth
+
+          ! Reset soil moisture to equilibrium at capped WTD
+          do LoopInd1 = 1, NumSoilLayer
+             if (LoopInd1 == 1) then
+                d_top_peat = 0.0_kind_noahmp
+             else
+                d_top_peat = abs(DepthSoilLayer(LoopInd1 - 1))
+             endif
+             d_bot_peat = abs(DepthSoilLayer(LoopInd1))
+             SoilLiqWater(LoopInd1) = EquilibriumSMMicroTopo(d_top_peat, d_bot_peat, &
+                 WaterTableDepth, thetas_peat, ae_peat, bb_peat)
+          enddo
+
+          ! Compute total soil water after cap [m]
+          W_soil_after_cap = 0.0_kind_noahmp
+          do LoopInd1 = 1, NumSoilLayer
+             W_soil_after_cap = W_soil_after_cap + &
+                 SoilLiqWater(LoopInd1) * abs(ThicknessSnowSoilLayer(LoopInd1))
+          enddo
+
+          ! Route excess water to subsurface runoff [mm/s] for mass conservation
+          RunoffSubsurface = RunoffSubsurface + &
+              (W_soil_before_cap - W_soil_after_cap) / SoilTimeStep
+
+          ! Update FloodedFraction
+          FloodedFraction = FloodedFrac(z_wt_end)
+
+          write(*,*) 'WARNING: WTD capped at z_col_bot=', WTD_max_peat, &
+                     ' original WTD=', WTD_original
+       endif
 
        ! Accumulated RunoffSurface and RunoffSubsurface [mm per soil timestep]
        RunoffSurface    = RunoffSurface    * SoilTimeStep
